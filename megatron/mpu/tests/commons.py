@@ -12,17 +12,22 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
+# commons.py
+import sys
+sys.path.append("..")
 import argparse
 import os
 import random
 import numpy
 import torch
 
-import mpu
-
-
+import megatron.mpu as mpu # 由于本文测试代码位于项目的根目录下，因此修改了mpu的import方式
+​
+​
 class IdentityLayer(torch.nn.Module):
+    """
+    一个单层网络，会在测试cross_entropy.py时使用。
+    """
     def __init__(self, size, scale=1.0):
         super(IdentityLayer, self).__init__()
         self.weight = torch.nn.Parameter(scale * torch.randn(size))
@@ -41,6 +46,7 @@ def set_random_seed(seed):
 
 def initialize_distributed(backend='nccl'):
     """Initialize torch.distributed."""
+    """初始化分布式环境"""
     # Get local rank in case it is provided.
     parser = argparse.ArgumentParser()
     parser.add_argument('--local_rank', type=int, default=None,
@@ -49,8 +55,8 @@ def initialize_distributed(backend='nccl'):
     local_rank = args.local_rank
 
     # Get rank and world size.
-    rank = int(os.getenv('RANK', '0'))
-    world_size = int(os.getenv("WORLD_SIZE", '1'))
+    rank = int(os.getenv('RANK', '0')) # 当前进程所对应的rank(rank是显卡所对应的全局编号)
+    world_size = int(os.getenv("WORLD_SIZE", '1')) # world_size是指所有可用显卡的数量
 
     print('> initializing torch.distributed with local rank: {}, '
           'rank: {}, world size: {}'.format(local_rank, rank, world_size))
@@ -62,19 +68,23 @@ def initialize_distributed(backend='nccl'):
     torch.cuda.set_device(device)
 
     # Call the init process.
+    # 初始化分布式环境所需要的相关代码
     init_method = 'tcp://'
     master_ip = os.getenv('MASTER_ADDR', 'localhost')
     master_port = os.getenv('MASTER_PORT', '6000')
     init_method += master_ip + ':' + master_port
     torch.distributed.init_process_group(
-        backend=backend,
+        backend=backend, # 使用gpu时，backend最好选择nccl
         world_size=world_size,
         rank=rank,
         init_method=init_method)
 
 
 def print_separator(message):
-    torch.distributed.barrier()
+    """
+    输出辅助函数
+    """
+    torch.distributed.barrier() # 保证所有进程在此处保存同步，主要是为了防止多进行输出混乱
     filler_len = (78 - len(message)) // 2
     filler = '-' * filler_len
     string = '\n' + filler + ' {} '.format(message) + filler
