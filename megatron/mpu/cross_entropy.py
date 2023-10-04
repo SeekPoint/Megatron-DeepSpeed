@@ -108,3 +108,111 @@ class _VocabParallelCrossEntropy(torch.autograd.Function):
 def vocab_parallel_cross_entropy(vocab_parallel_logits, target):
     """Helper function for the cross entropy."""
     return _VocabParallelCrossEntropy.apply(vocab_parallel_logits, target)
+
+
+# cross_entropy.py
+class _MyVocabParallelCrossEntropy(torch.autograd.Function):
+
+    @staticmethod
+    def forward(ctx, vocab_parallel_logits, target):
+        # vocab_parallel_logits: (batch_size, seq_length, vocab_size)
+        # target: (batch_size, seq_length)
+        global_rank = torch.distributed.get_rank()
+        tp_rank = get_tensor_model_parallel_rank()
+        # 在vocab维度取最大值，也就是每个token对于logits的最大值
+        logits_max = torch.max(vocab_parallel_logits, dim=-1)[0]
+        torch.distributed.all_reduce(logits_max,
+                                     op=torch.distributed.ReduceOp.MAX,
+                                     group=get_tensor_model_parallel_group())
+        vocab_parallel_logits.sub_(logits_max.unsqueeze(dim=-1))
+
+        info = f"*"*20 + \
+                f"\n> global_rank={global_rank}\n" + \
+                f"> tp_rank={tp_rank}\n" + \
+                f"> size of vocab_parallel_logits={list(vocab_parallel_logits.size())}\n" + \
+                f"> size of target={list(target.size())}\n"
+
+        # 依据当前进程持有的部分词表大小partition_vocab_size，以及张量并行组中rank和world size，
+        # 确定出当前进程持有词表的起始索引vocab_start_index和结束索引vocab_end_index
+        get_vocab_range = VocabUtility.vocab_range_from_per_partition_vocab_size
+        partition_vocab_size = vocab_parallel_logits.size()[-1]
+        rank = get_tensor_model_parallel_rank()
+        world_size = get_tensor_model_parallel_world_size()
+        vocab_start_index, vocab_end_index = get_vocab_range(
+            partition_vocab_size, rank, world_size)
+
+        # 将不在词表中的target遮蔽掉
+        target_mask = (target < vocab_start_index) | (target >= vocab_end_index)
+        masked_target = target.clone() - vocab_start_index
+        masked_target[target_mask] = 0
+
+        # ligits_2d: (batch_size*seq_length, vocab_size)
+        logits_2d = vocab_parallel_logits.view(-1, partition_vocab_size)
+        # masked_target_1d: (batch_size*seq_length)
+        masked_target_1d = masked_target.view(-1)
+        arange_1d = torch.arange(start=0, end=logits_2d.size()[0],
+                                 device=logits_2d.device)
+        # predicted_logits_1d 表示正确token对应的logit
+        predicted_logits_1d = logits_2d[arange_1d, masked_target_1d]
+        predicted_logits_1d = predicted_logits_1d.clone().contiguous()
+
+        predicted_logits = predicted_logits_1d.view_as(target)
+        # 将当前进程无法获得的logits设置为0，用于后续allreduce组成完成logits
+        predicted_logits[target_mask] = 0.0
+
+        info += f"> size of logits_2d={list(logits_2d.size())}\n" + \
+                f"> size of masked_target_1d={list(masked_target_1d.size())}\n" + \
+                f"> size of predicted_logits={list(predicted_logits_1d.size())}\n"
+
+        # 各个进程持有的predicted_logits的大小是完全相同的
+        # 但是，当前进程持有的predicted_logits仅在当前词表上才有取值，其余值为0
+        # 通过allreduce即可得到完整的predicted_logits
+        torch.distributed.all_reduce(predicted_logits,
+                                     op=torch.distributed.ReduceOp.SUM,
+                                     group=get_tensor_model_parallel_group())
+
+        # 求softmax分母的部分
+        exp_logits = vocab_parallel_logits
+
+        torch.exp(vocab_parallel_logits, out=exp_logits)
+        sum_exp_logits = exp_logits.sum(dim=-1)
+        torch.distributed.all_reduce(sum_exp_logits,
+                                     op=torch.distributed.ReduceOp.SUM,
+                                     group=get_tensor_model_parallel_group())
+
+        # 对应上面公式推导的最终结果
+        # loss: (batch_size, seq_length)。
+        # loss是一个矩阵，矩阵的值对应单个token的交叉熵
+        loss = torch.log(sum_exp_logits) - predicted_logits
+        info += f"> size of sum_exp_logits={list(sum_exp_logits.size())}\n" + \
+                f"> size of loss={list(loss.size())}\n"
+
+        print(info, end="")
+
+        exp_logits.div_(sum_exp_logits.unsqueeze(dim=-1))
+        ctx.save_for_backward(exp_logits, target_mask, masked_target_1d)
+
+        return loss
+
+    @staticmethod
+    def backward(ctx, grad_output):
+
+        # Retreive tensors from the forward path.
+        softmax, target_mask, masked_target_1d = ctx.saved_tensors
+
+        # All the inputs have softmax as thier gradient.
+        grad_input = softmax
+        # For simplicity, work with the 2D gradient.
+        partition_vocab_size = softmax.size()[-1]
+        grad_2d = grad_input.view(-1, partition_vocab_size)
+
+        # Add the gradient from matching classes.
+        arange_1d = torch.arange(start=0, end=grad_2d.size()[0],
+                                 device=grad_2d.device)
+        grad_2d[arange_1d, masked_target_1d] -= (
+            1.0 - target_mask.view(-1).float())
+
+        # Finally elementwise multiplication with the output gradients.
+        grad_input.mul_(grad_output.unsqueeze(dim=-1))
+
+        return grad_input, None
