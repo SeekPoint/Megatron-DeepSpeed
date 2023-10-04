@@ -113,6 +113,16 @@ class ScaledSoftmax(torch.autograd.Function):
 
 class FusedScaleMaskSoftmax(nn.Module):
     """
+    融合操作: scaling + mask + softmax
+    参数:
+        input_in_fp16: 输入数据是否是fp16
+        input_in_bf16: 输入数据是否是bf16
+        attn_mask_type: 注意力mask的类型，可选pad或者causal(预训练时是causal)
+        scaled_masked_softmax_fusion: 是否使用softmax融合
+        mask_func: 应用mask的函数
+        softmax_in_fp32: 若为true, softmax以fp32的精度执行
+        scale: 缩放因子
+
     fused operation: scaling + mask + softmax
 
     Arguments:
@@ -126,20 +136,20 @@ class FusedScaleMaskSoftmax(nn.Module):
     """
 
     def __init__(
-        self,
-        input_in_fp16,
-        input_in_bf16,
-        attn_mask_type,
-        scaled_masked_softmax_fusion,
-        mask_func,
-        softmax_in_fp32,
-        scale,
+            self,
+            input_in_fp16,
+            input_in_bf16,
+            attn_mask_type,
+            scaled_masked_softmax_fusion,
+            mask_func,
+            softmax_in_fp32,
+            scale,
     ):
         super(FusedScaleMaskSoftmax, self).__init__()
         self.input_in_fp16 = input_in_fp16
         self.input_in_bf16 = input_in_bf16
         assert not (
-            self.input_in_fp16 and self.input_in_bf16
+                self.input_in_fp16 and self.input_in_bf16
         ), "both fp16 and bf16 flags cannot be active at the same time."
         self.input_in_float16 = self.input_in_fp16 or self.input_in_bf16
         self.attn_mask_type = attn_mask_type
@@ -149,27 +159,34 @@ class FusedScaleMaskSoftmax(nn.Module):
         self.scale = scale
 
         assert (
-            self.scale is None or softmax_in_fp32
+                self.scale is None or softmax_in_fp32
         ), "softmax should be in fp32 when scaled"
 
+    # def forward(self, input, mask):
+    #     # [b, np, sq, sk]
+    #     assert input.dim() == 4
+    #
+    #     if self.is_kernel_available(mask, *input.size()):
+    #         return self.forward_fused_softmax(input, mask)
+    #     else:
+    #         return self.forward_torch_softmax(input, mask)
     def forward(self, input, mask):
         # [b, np, sq, sk]
         assert input.dim() == 4
 
-        if self.is_kernel_available(mask, *input.size()):
-            return self.forward_fused_softmax(input, mask)
-        else:
-            return self.forward_torch_softmax(input, mask)
+        # (这里对原始代码进行了修改)
+        # 调用融合操作
+        return self.forward_torch_softmax(input, mask)
 
     def is_kernel_available(self, mask, b, np, sq, sk):
         attn_batches = b * np
 
         if (
-            self.scaled_masked_softmax_fusion  # user want to fuse
-            and self.input_in_float16  # input must be fp16
-            and 16 < sk <= 4096  # sk must be 16 ~ 4096
-            and sq % 4 == 0  # sq must be divisor of 4
-            and attn_batches % 4 == 0  # np * b must be divisor of 4
+                self.scaled_masked_softmax_fusion  # user want to fuse
+                and self.input_in_float16  # input must be fp16
+                and 16 < sk <= 4096  # sk must be 16 ~ 4096
+                and sq % 4 == 0  # sq must be divisor of 4
+                and attn_batches % 4 == 0  # np * b must be divisor of 4
         ):
             if 0 <= sk <= 4096:
                 batch_per_block = self.get_batch_per_block(sq, sk, b, np)
@@ -204,25 +221,34 @@ class FusedScaleMaskSoftmax(nn.Module):
     @staticmethod
     @lru_cache(maxsize=1)
     def get_causal_mask(sequence_length: int):
+        """
+        获得causal mask
+        """
         mask = torch.ones(1, 1, sequence_length, sequence_length, dtype=torch.bool, device=torch.cuda.current_device())
         return torch.triu(mask, diagonal=1)
 
     def forward_torch_softmax(self, input, mask):
+        # 转换input的输入类型
         if self.input_in_float16 and self.softmax_in_fp32:
             input = input.float()
 
+        # 使用缩放因子
         if self.scale is not None:
             input = input * self.scale
 
+        # 构建causal mask
         if self.attn_mask_type == AttnMaskType.causal:
             assert mask is None
             assert input.shape[2] == input.shape[3]
             mask = self.get_causal_mask(input.shape[2])
 
+        # 将mask应用在input上
         mask_output = self.mask_func(input, mask) if mask is not None else input
 
+        # 执行softmax
         probs = torch.nn.Softmax(dim=-1)(mask_output)
 
+        # 转换精度
         if self.input_in_float16 and self.softmax_in_fp32:
             if self.input_in_fp16:
                 probs = probs.half()

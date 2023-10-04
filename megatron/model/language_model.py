@@ -100,7 +100,6 @@ class Pooler(MegatronModule):
         pooled = torch.tanh(pooled)
         return pooled
 
-
 class Embedding(MegatronModule):
     """Language model embeddings.
 
@@ -111,6 +110,13 @@ class Embedding(MegatronModule):
         init_method: weight initialization method
         num_tokentypes: size of the token-type embeddings. 0 value
                         will ignore this embedding
+
+    参数:
+        hidden_size: hidden size
+        vocab_size: 词表大小
+        embedding_dropout_prob: embedding层的dropout率
+        init_method: 权重的初始方法
+        num_tokentypes: token type embedding的大小，设置为0将忽略该embedding
     """
 
     def __init__(self,
@@ -126,7 +132,8 @@ class Embedding(MegatronModule):
         self.num_tokentypes = num_tokentypes
 
         args = get_args()
-
+        # 这里使用了张量并行版的Embedding
+        # 原理和实现见系列文章：【Megatron-DeepSpeed】张量并行工具代码mpu详解(四)：张量并行版Embedding层及交叉熵的实现及测试
         # Word embeddings (parallel).
         self.word_embeddings = mpu.VocabParallelEmbedding(
             vocab_size, self.hidden_size,
@@ -134,6 +141,8 @@ class Embedding(MegatronModule):
         self._word_embeddings_key = 'word_embeddings'
 
         # Position embedding (serial).
+        # 绝对位置编码的处理
+        # 该位置编码其实没有使用(可以忽略)
         self.position_embedding_type = args.position_embedding_type
         if self.position_embedding_type == PositionEmbeddingType.absolute:
             max_position_embeddings = args.max_position_embeddings
@@ -146,7 +155,7 @@ class Embedding(MegatronModule):
         else:
             self.position_embeddings = None
 
-        # Token type embedding.
+        # token type embedding(可以忽略)
         # Add this as an optional field that can be added through
         # method call so we can load a pretrain model without
         # token types and add them as needed.
@@ -180,16 +189,18 @@ class Embedding(MegatronModule):
         self.init_method(self.tokentype_embeddings.weight)
 
     def forward(self, input_ids, position_ids, tokentype_ids=None):
-        # Embeddings.
+        # word embedding
         words_embeddings = self.word_embeddings(input_ids)
         embeddings = words_embeddings
 
+        # 若设置position embedding，则累加至word embedding
         if self.position_embedding_type == PositionEmbeddingType.absolute:
             assert self.position_embeddings is not None
             embeddings = embeddings + self.position_embeddings(position_ids)
         else:
             assert self.position_embeddings is None
 
+        # 若设置token type embedding，则继续累加
         if tokentype_ids is not None:
             assert self.tokentype_embeddings is not None
             embeddings = embeddings + self.tokentype_embeddings(tokentype_ids)

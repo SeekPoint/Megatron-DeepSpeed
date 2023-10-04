@@ -69,15 +69,17 @@ class ParallelMLP(MegatronModule):
         super(ParallelMLP, self).__init__()
         args = get_args()
 
+        # 列并行层，将hidden state投影至ffn_hidden_size
         # Project to ffn_hidden_size
         self.dense_h_to_4h = mpu.ColumnParallelLinear(
             args.hidden_size,
             # GLU is a special activation that divides the dimension by a factor 2.
             2 * args.ffn_hidden_size if args.glu_activation else args.ffn_hidden_size,
-            gather_output=False,
+            gather_output=False,  # 不对输出结果进行gather
             init_method=init_method,
             skip_bias_add=True)
 
+        # 激活函数
         self.bias_gelu_fusion = args.bias_gelu_fusion
         self.activation_func = F.gelu
         if args.glu_activation:
@@ -87,20 +89,22 @@ class ParallelMLP(MegatronModule):
         elif args.onnx_safe:
             self.activation_func = erf_gelu
 
+        # 投影回原来的hidden size
         # Project back to h.
         self.dense_4h_to_h = mpu.RowParallelLinear(
             args.ffn_hidden_size,
             args.hidden_size,
-            input_is_parallel=True,
+            input_is_parallel=True, # 输入是经过并行后的
             init_method=output_layer_init_method,
             skip_bias_add=True)
 
 
     def forward(self, hidden_states):
-
+        # 投影1
         # [s, b, 4hp]
         intermediate_parallel, bias_parallel = self.dense_h_to_4h(hidden_states)
 
+        # 非线性激活
         if self.bias_gelu_fusion:
              intermediate_parallel = \
                      bias_gelu_impl(intermediate_parallel, bias_parallel)
@@ -108,6 +112,7 @@ class ParallelMLP(MegatronModule):
             intermediate_parallel = \
                 self.activation_func(intermediate_parallel + bias_parallel)
 
+        # 投影2
         # [s, b, h]
         output, output_bias = self.dense_4h_to_h(intermediate_parallel)
         return output, output_bias
@@ -118,64 +123,89 @@ class ParallelAttention(MegatronModule):
 
     Self-attention layer takes input with size [b, s, h]
     and returns output of the same size.
+	输入和输出的形状均为[batch_size, seq_length, hidden_size]
     """
 
     def __init__(self, init_method,
                  output_layer_init_method, layer_number,
                  attention_type=AttnType.self_attn,
                  attn_mask_type=AttnMaskType.padding):
+        """
+        init_method：初始化方法
+        output_layer_init_method：输出层的初始化方法
+        layer_number: 模型的层数量
+        attention_type：注意力类型：self attention或者cross attention
+        attn_mask_type：注意力Mask类型
+        """
         super(ParallelAttention, self).__init__()
         args = get_args()
-        self.fp16 = args.fp16
-        self.bf16 = args.bf16
-        self.position_embedding_type = args.position_embedding_type
+        self.fp16 = args.fp16  # 训练是否采用fp16
+        self.bf16 = args.bf16  # 训练是否采用bf16
+        self.position_embedding_type = args.position_embedding_type  # 位置嵌入的方式
 
         self.apply_query_key_layer_scaling = args.apply_query_key_layer_scaling
+        # 注意力分数是否采用fp32的格式
         self.attention_softmax_in_fp32 = args.attention_softmax_in_fp32
         if self.apply_query_key_layer_scaling:
             self.attention_softmax_in_fp32 = True
+        # 模型层数
         self.layer_number = max(1, layer_number)
+        # 注意力类型
         self.attention_type = attention_type
+        # 掩码(Mask)类型
         self.attn_mask_type = attn_mask_type
-
+        # 在实际的设置中，这里的projection_size就是hidden size
         projection_size = args.kv_channels * args.num_attention_heads
 
         # Per attention head and per partition values.
         world_size = mpu.get_tensor_model_parallel_world_size()
+        # 张量并行组中，每个rank要处理的hidden size
         self.hidden_size_per_partition = mpu.divide(projection_size,
                                                     world_size)
+        # 每个注意力头对应的hidden size
         self.hidden_size_per_attention_head = mpu.divide(
             projection_size, args.num_attention_heads)
+        # 张量并行组中，每个rank要处理的注意力头数量
         self.num_attention_heads_per_partition = mpu.divide(
             args.num_attention_heads, world_size)
 
-        # Strided linear layer.
-        if attention_type == AttnType.self_attn:
-            self.query_key_value = mpu.ColumnParallelLinear(
-                args.hidden_size,
-                3 * projection_size,
-                gather_output=False,
-                init_method=init_method)
-        else:
-            assert attention_type == AttnType.cross_attn
-            self.query = mpu.ColumnParallelLinear(
-                args.hidden_size,
-                projection_size,
-                gather_output=False,
-                init_method=init_method)
+        # (这里对原始代码进行了简化)
+        # 计算Q、K、V的投影层，这里使用列并行(实现注意力并行的关键)
+        self.query_key_value = mpu.ColumnParallelLinear(
+             args.hidden_size,
+             3 * projection_size,
+             gather_output=False, # 不进行all_gather，保证后续的处理是张量并行的
+             init_method=init_method)
 
-            self.key_value = mpu.ColumnParallelLinear(
-                args.hidden_size,
-                2 * projection_size,
-                gather_output=False,
-                init_method=init_method)
+        # # Strided linear layer.
+        # if attention_type == AttnType.self_attn:
+        #     self.query_key_value = mpu.ColumnParallelLinear(
+        #         args.hidden_size,
+        #         3 * projection_size,
+        #         gather_output=False,  # 不进行all_gather，保证后续的处理是张量并行的
+        #         init_method=init_method)
+        # else:
+        #     assert attention_type == AttnType.cross_attn
+        #     self.query = mpu.ColumnParallelLinear(
+        #         args.hidden_size,
+        #         projection_size,
+        #         gather_output=False,
+        #         init_method=init_method)
+        #
+        #     self.key_value = mpu.ColumnParallelLinear(
+        #         args.hidden_size,
+        #         2 * projection_size,
+        #         gather_output=False,
+        #         init_method=init_method)
 
+        # query和key点积的缩放因子
         coeff = None
         self.norm_factor = math.sqrt(self.hidden_size_per_attention_head)
         if self.apply_query_key_layer_scaling:
             coeff = self.layer_number
             self.norm_factor *= coeff
 
+        # 缩放、掩码和softmax融合的算子
         self.scale_mask_softmax = FusedScaleMaskSoftmax(
             self.fp16, self.bf16,
             self.attn_mask_type,
@@ -190,6 +220,8 @@ class ParallelAttention(MegatronModule):
         self.attention_dropout = torch.nn.Dropout(args.attention_dropout)
 
         # Output.
+        # 行并行的全量链接层
+        # 其除了实现全链接的功能外，也负责了将张量并行的结果gather在一起
         self.dense = mpu.RowParallelLinear(
             projection_size,
             args.hidden_size,
@@ -197,60 +229,86 @@ class ParallelAttention(MegatronModule):
             init_method=output_layer_init_method,
             skip_bias_add=True)
 
-        if deepspeed.checkpointing.is_configured():
-            global get_cuda_rng_tracker, checkpoint
-            get_cuda_rng_tracker = deepspeed.checkpointing.get_cuda_rng_tracker
-            checkpoint = deepspeed.checkpointing.checkpoint
-
-        if self.position_embedding_type == PositionEmbeddingType.rotary:
-            self.rotary_emb = RotaryEmbedding(self.hidden_size_per_attention_head, precision=args.params_dtype)
+        # if deepspeed.checkpointing.is_configured():
+        #     global get_cuda_rng_tracker, checkpoint
+        #     get_cuda_rng_tracker = deepspeed.checkpointing.get_cuda_rng_tracker
+        #     checkpoint = deepspeed.checkpointing.checkpoint
+        #
+        # if self.position_embedding_type == PositionEmbeddingType.rotary:
+        #     self.rotary_emb = RotaryEmbedding(self.hidden_size_per_attention_head, precision=args.params_dtype)
 
     def forward(self, hidden_states, attention_mask, layer_past=None,
                 get_key_value=False, encoder_output=None, alibi=None):
+
         # hidden_states: [sq, b, h]
+        # hidden_states: [seq_length, batch_size, hidden_size]
 
         # =====================
         # Query, Key, and Value
+        # 计算Query, Key, and Value
         # =====================
 
-        if self.attention_type == AttnType.self_attn:
-            # Attention heads [sq, b, h] --> [sq, b, (np * 3 * hn)]
-            mixed_x_layer, _ = self.query_key_value(hidden_states)
+        # [seq_length, batch_size, hidden_size] --> [seq_length, batch_size, (3*np*hn)]
+        # 注：这里的投影层是列并行层，经过投影后，张量并行组中的各个rank持有不同的mixed_x_layer
+        mixed_x_layer, _ = self.query_key_value(hidden_states)
 
-            # [sq, b, (np * 3 * hn)] --> [sq, b, np, 3 * hn]
-            new_tensor_shape = mixed_x_layer.size()[:-1] + \
-                (self.num_attention_heads_per_partition,
-                 3 * self.hidden_size_per_attention_head)
-            mixed_x_layer = mixed_x_layer.view(*new_tensor_shape)
+        # 调整maxed_x_layer的形状
+        # (seq_length, batch_size, (3*np*hn)) --> (seq_length, batch_size, np, 3*hn)
+        new_tensor_shape = mixed_x_layer.size()[:-1] + \
+                           (self.num_attention_heads_per_partition,
+                            3 * self.hidden_size_per_attention_head)
+        mixed_x_layer = mixed_x_layer.view(*new_tensor_shape)
 
-            # [sq, b, np, 3 * hn] --> 3 [sq, b, np, hn]
-            (query_layer,
-             key_layer,
-             value_layer) = mpu.split_tensor_along_last_dim(mixed_x_layer, 3)
-        else:
-            # Attention heads [sk, b, h] --> [sk, b, (np * 2 * hn)]
-            mixed_kv_layer, _ = self.key_value(encoder_output)
+        # 将Q、K、V拆分处理
+        # [seq_length, batch_size, np, 3*hn] --> 3 [seq_length, batch_size, np, hn]
+        (query_layer,
+         key_layer,
+         value_layer) = mpu.split_tensor_along_last_dim(mixed_x_layer, 3)
 
-            # [sk, b, (np * 2 * hn)] --> [sk, b, np, 2 * hn]
-            new_tensor_shape = mixed_kv_layer.size()[:-1] + \
-                (self.num_attention_heads_per_partition,
-                 2 * self.hidden_size_per_attention_head)
-            mixed_kv_layer = mixed_kv_layer.view(*new_tensor_shape)
-
-            # [sk, b, np, 2 * hn] --> 2 [sk, b, np, hn]
-            (key_layer,
-             value_layer) = mpu.split_tensor_along_last_dim(mixed_kv_layer, 2)
-
-            # Attention head [sq, b, h] --> [sq, b, hp]
-            query_layer, _ = self.query(hidden_states)
-            # [sq, b, hp] --> [sq, b, np, hn]
-            new_tensor_shape = query_layer.size()[:-1] + \
-                (self.num_attention_heads_per_partition,
-                 self.hidden_size_per_attention_head)
-            query_layer = query_layer.view(*new_tensor_shape)
+        # if self.attention_type == AttnType.self_attn:
+        #     # Attention heads [sq, b, h] --> [sq, b, (np * 3 * hn)]
+        #     # [seq_length, batch_size, hidden_size] --> [seq_length, batch_size, (3*np*hn)]
+        #     # 注：这里的投影层是列并行层，经过投影后，张量并行组中的各个rank持有不同的mixed_x_layer
+        #     mixed_x_layer, _ = self.query_key_value(hidden_states)
+        #
+        #     # [sq, b, (np * 3 * hn)] --> [sq, b, np, 3 * hn]
+        #     # 调整maxed_x_layer的形状
+        #     # (seq_length, batch_size, (3*np*hn)) --> (seq_length, batch_size, np, 3*hn)
+        #     new_tensor_shape = mixed_x_layer.size()[:-1] + \
+        #                        (self.num_attention_heads_per_partition,
+        #                         3 * self.hidden_size_per_attention_head)
+        #     mixed_x_layer = mixed_x_layer.view(*new_tensor_shape)
+        #     #           #将Q、K、V拆分处理
+        #     # [seq_length, batch_size, np, 3*hn] --> 3 [seq_length, batch_size, np, hn]
+        #     # [sq, b, np, 3 * hn] --> 3 [sq, b, np, hn]
+        #     (query_layer,
+        #      key_layer,
+        #      value_layer) = mpu.split_tensor_along_last_dim(mixed_x_layer, 3)
+        # else:
+        #     # Attention heads [sk, b, h] --> [sk, b, (np * 2 * hn)]
+        #     mixed_kv_layer, _ = self.key_value(encoder_output)
+        #
+        #     # [sk, b, (np * 2 * hn)] --> [sk, b, np, 2 * hn]
+        #     new_tensor_shape = mixed_kv_layer.size()[:-1] + \
+        #                        (self.num_attention_heads_per_partition,
+        #                         2 * self.hidden_size_per_attention_head)
+        #     mixed_kv_layer = mixed_kv_layer.view(*new_tensor_shape)
+        #
+        #     # [sk, b, np, 2 * hn] --> 2 [sk, b, np, hn]
+        #     (key_layer,
+        #      value_layer) = mpu.split_tensor_along_last_dim(mixed_kv_layer, 2)
+        #
+        #     # Attention head [sq, b, h] --> [sq, b, hp]
+        #     query_layer, _ = self.query(hidden_states)
+        #     # [sq, b, hp] --> [sq, b, np, hn]
+        #     new_tensor_shape = query_layer.size()[:-1] + \
+        #                        (self.num_attention_heads_per_partition,
+        #                         self.hidden_size_per_attention_head)
+        #     query_layer = query_layer.view(*new_tensor_shape)
 
         # ==================================
         # Adjust key and value for inference
+        # 推理时，调整key和value
         # ==================================
 
         if layer_past is not None:
@@ -264,89 +322,113 @@ class ParallelAttention(MegatronModule):
 
         # ===================================
         # Raw attention scores. [b, np, s, s]
+        # 注意力分数：[batch_size, np, seq_length, seq_length]
         # ===================================
 
         # [b, np, sq, sk]
+        # [batch_size, np, seq_length, seq_length]
+        # 这里key_layer.size(0)等于query_layer.size(0)
         output_size = (query_layer.size(1),
                        query_layer.size(2),
                        query_layer.size(0),
                        key_layer.size(0))
 
+        # 调整query和key的形状，便于后续计算注意力分数
+        # [seq_length, batch_size, np, hn] -> [seq_length, batch_size*np, hn]
         # [sq, b, np, hn] -> [sq, b * np, hn]
         query_layer = query_layer.view(output_size[2],
                                        output_size[0] * output_size[1], -1)
         # [sk, b, np, hn] -> [sk, b * np, hn]
+        # [seq_length, batch_size, np, hn] -> [seq_length, batch_size*np, hn]
         key_layer = key_layer.view(output_size[3],
                                    output_size[0] * output_size[1], -1)
 
-        # preallocting result tensor: [b * np, sq, sk]
-        if alibi is None:
-            matmul_result = torch.empty(
-                output_size[0]*output_size[1],
-                output_size[2],
-                output_size[3],
-                dtype=query_layer.dtype,
-                device=torch.cuda.current_device())
-        else:
-            matmul_result = alibi[:output_size[0]*output_size[1], :, :output_size[3]]
+        # # preallocting result tensor: [b * np, sq, sk]
+        # if alibi is None:
+        #     matmul_result = torch.empty(
+        #         output_size[0] * output_size[1],
+        #         output_size[2],
+        #         output_size[3],
+        #         dtype=query_layer.dtype,
+        #         device=torch.cuda.current_device())
+        # else:
+        #     matmul_result = alibi[:output_size[0] * output_size[1], :, :output_size[3]]
 
+        # (这里修改了原始代码)
+        # matmul_result：当然rank的alibi偏差
+        matmul_result = alibi[:output_size[0]*output_size[1], :, :output_size[3]]
+
+        # (这里去掉了Rotary embeddings，因为没有使用)
         # Rotary embeddings
-        if self.position_embedding_type == PositionEmbeddingType.rotary:
-            apply_rotary_fn = apply_rotary_pos_emb_torch if self.bf16 else apply_rotary_pos_emb
-
-            seq_len = key_layer.shape[0]
-            offset = 0
-            if layer_past is not None and layer_past.numel() > 0:
-                offset = layer_past[0].shape[0]
-                seq_len += offset
-            cos, sin = self.rotary_emb(value_layer, seq_len=seq_len)
-            query_layer, key_layer = apply_rotary_fn(query_layer, key_layer, cos, sin, offset=offset)
+        # if self.position_embedding_type == PositionEmbeddingType.rotary:
+        #     apply_rotary_fn = apply_rotary_pos_emb_torch if self.bf16 else apply_rotary_pos_emb
+        #
+        #     seq_len = key_layer.shape[0]
+        #     offset = 0
+        #     if layer_past is not None and layer_past.numel() > 0:
+        #         offset = layer_past[0].shape[0]
+        #         seq_len += offset
+        #     cos, sin = self.rotary_emb(value_layer, seq_len=seq_len)
+        #     query_layer, key_layer = apply_rotary_fn(query_layer, key_layer, cos, sin, offset=offset)
 
         # Raw attention scores. [b * np, sq, sk]
-        if alibi is None:
-            matmul_result = torch.baddbmm(
-                matmul_result,
-                query_layer.transpose(0, 1),   # [b * np, sq, hn]
-                key_layer.transpose(0, 1).transpose(1, 2),  # [b * np, hn, sk]
-                beta=0.0, alpha=(1.0/self.norm_factor))
+        # if alibi is None:
+        #     matmul_result = torch.baddbmm(
+        #         matmul_result,
+        #         query_layer.transpose(0, 1),  # [b * np, sq, hn]
+        #         key_layer.transpose(0, 1).transpose(1, 2),  # [b * np, hn, sk]
+        #         beta=0.0, alpha=(1.0 / self.norm_factor))
+        # else:
+        #     if not hasattr(self, "logged_alibi"):
+        #         logger.debug("Using Alibi.")
+        #         self.logged_alibi = True
+        #
+        #     if self.apply_query_key_layer_scaling:
+        #         beta = 1.0 / self.layer_number
+        #     else:
+        #         beta = 1.0
+        #
+        #     matmul_result = torch.baddbmm(
+        #         matmul_result,
+        #         query_layer.transpose(0, 1),  # [b * np, sq, hn]
+        #         key_layer.transpose(0, 1).transpose(1, 2),  # [b * np, hn, sk]
+        #         beta=beta, alpha=(1.0 / self.norm_factor))
+        # 注意力分数，[batch_size * np, seq_length, seq_length]
+        if self.apply_query_key_layer_scaling:
+            beta = 1.0 / self.layer_number
         else:
-            if not hasattr(self, "logged_alibi"):
-                logger.debug("Using Alibi.")
-                self.logged_alibi = True
-
-            if self.apply_query_key_layer_scaling:
-                beta = 1.0 / self.layer_number
-            else:
-                beta = 1.0
-
-            matmul_result = torch.baddbmm(
-                matmul_result,
-                query_layer.transpose(0, 1),  # [b * np, sq, hn]
-                key_layer.transpose(0, 1).transpose(1, 2),  # [b * np, hn, sk]
-                beta=beta, alpha=(1.0 / self.norm_factor))
+            beta = 1.0
+        # QK^T*alpha+alibi*beta
+        matmul_result = torch.baddbmm(
+            matmul_result,
+            query_layer.transpose(0, 1),
+            key_layer.transpose(0, 1).transpose(1, 2),
+            beta=beta, alpha=(1.0 / self.norm_factor))
 
         # change view to [b, np, sq, sk]
+        # 重塑形状: [batch_size, np, seq_length, seq_length]
         attention_scores = matmul_result.view(*output_size)
         # ==================================================
         # Update attention mask for inference. [b, np, sq, sk]
         # ==================================================
 
-        if get_key_value:
-            with torch.no_grad():
-                # TODO @thomasw21 Handle case where `attention_mask` is None
-                if layer_past is not None:
-                    attention_mask = attention_mask[
-                        ...,
-                        attention_scores.size(3) - 1,
-                        :attention_scores.size(3)].unsqueeze(2)
-                else:
-                    attention_mask = attention_mask[
-                        ...,
-                        :attention_scores.size(3),
-                        :attention_scores.size(3)]
+        # if get_key_value:
+        #     with torch.no_grad():
+        #         # TODO @thomasw21 Handle case where `attention_mask` is None
+        #         if layer_past is not None:
+        #             attention_mask = attention_mask[
+        #                              ...,
+        #                              attention_scores.size(3) - 1,
+        #                              :attention_scores.size(3)].unsqueeze(2)
+        #         else:
+        #             attention_mask = attention_mask[
+        #                              ...,
+        #                              :attention_scores.size(3),
+        #                              :attention_scores.size(3)]
 
         # ===========================
         # Attention probs and dropout
+        # 在注意力分数上应用mask和softmax，以及dropout
         # ===========================
 
         # attention scores and attention mask [b, np, sq, sk]
@@ -360,43 +442,51 @@ class ParallelAttention(MegatronModule):
 
         # =========================
         # Context layer. [sq, b, hp]
+        # 乘以value得到context
         # =========================
 
         # value_layer -> context layer.
         # [sk, b, np, hn] --> [b, np, sq, hn]
 
         # context layer shape: [b, np, sq, hn]
+        # context layer shape: [batch_size, np, seq_length, hn]
         output_size = (value_layer.size(1),
                        value_layer.size(2),
                        query_layer.size(0),
                        value_layer.size(3))
 
         # change view [sk, b * np, hn]
+        # 重塑value的形状：[seq_length, batch * np, hn]
         value_layer = value_layer.view(value_layer.size(0),
                                        output_size[0] * output_size[1], -1)
 
         # change view [b * np, sq, sk]
+        # 重新注意力分数：[batch_size*np, seq_length, seq_length]
         attention_probs = attention_probs.view(output_size[0] * output_size[1],
                                                output_size[2], -1)
-
+        # 乘以value，得到context_layer：[batch_size*np, seq_length, hn]
         # matmul: [b * np, sq, hn]
         context_layer = torch.bmm(attention_probs, value_layer.transpose(0, 1))
 
         # change view [b, np, sq, hn]
+        # 重塑形状：[batch_size, np, seq_length, hn]
         context_layer = context_layer.view(*output_size)
-
+        # 重塑形状：[seq_length, batch_size, np, hn]
         # [b, np, sq, hn] --> [sq, b, np, hn]
         context_layer = context_layer.permute(2, 0, 1, 3).contiguous()
 
         # [sq, b, np, hn] --> [sq, b, hp]
+        # 重塑形状：[seq_length, batch_size, hidden_size_per_partition]
         new_context_layer_shape = context_layer.size()[:-2] + \
-            (self.hidden_size_per_partition,)
+                                  (self.hidden_size_per_partition,)
         context_layer = context_layer.view(*new_context_layer_shape)
 
         # =================
         # Output. [sq, b, h]
+        # 输出，形状为[seq_length, batch_size, hidden_state]
         # =================
 
+        # 注：这里除了全链接的投影作用，行并行层还负责将并行的张量gather在一起
         output, bias = self.dense(context_layer)
 
         if get_key_value:
@@ -429,12 +519,13 @@ def bias_dropout_add_fused_inference(x, bias, residual, prob):
     # type: (Tensor, Tensor, Tensor, float) -> Tensor
     return bias_dropout_add(x, bias, residual, prob, False)
 
-
 class ParallelTransformerLayer(MegatronModule):
     """A single transformer layer.
 
     Transformer layer takes input with size [b, s, h] and returns an
     output of the same size.
+
+	单个Transformer层，输入和输出的形状都为[batch_size, seq_length, hidden_size]
     """
 
     def __init__(self, init_method, output_layer_init_method,
@@ -453,11 +544,13 @@ class ParallelTransformerLayer(MegatronModule):
         self.fp32_residual_connection = args.fp32_residual_connection
 
         # Layernorm on the input data.
+        # 输入数据的Layer Norm层
         self.input_layernorm = LayerNorm(
             args.hidden_size,
             eps=args.layernorm_epsilon)
 
         # Self attention.
+        # 并行自注意力机制
         self.self_attention = ParallelAttention(
             init_method,
             output_layer_init_method,
@@ -467,29 +560,31 @@ class ParallelTransformerLayer(MegatronModule):
         self.hidden_dropout = args.hidden_dropout
         self.bias_dropout_fusion = args.bias_dropout_fusion
 
+        # 注意力层输出的Layer Norm
         # Layernorm on the attention output
         self.post_attention_layernorm = LayerNorm(
             args.hidden_size,
             eps=args.layernorm_epsilon)
 
-        if self.layer_type == LayerType.decoder:
-            self.inter_attention = ParallelAttention(
-                init_method,
-                output_layer_init_method,
-                layer_number,
-                attention_type=AttnType.cross_attn)
-            # Layernorm on the attention output.
-            self.post_inter_attention_layernorm = LayerNorm(
-                args.hidden_size,
-                eps=args.layernorm_epsilon)
+        # if self.layer_type == LayerType.decoder:
+        #     self.inter_attention = ParallelAttention(
+        #         init_method,
+        #         output_layer_init_method,
+        #         layer_number,
+        #         attention_type=AttnType.cross_attn)
+        #     # Layernorm on the attention output.
+        #     self.post_inter_attention_layernorm = LayerNorm(
+        #         args.hidden_size,
+        #         eps=args.layernorm_epsilon)
 
-        # MLP
+        # MLP  # 并行MLP
         self.mlp = ParallelMLP(init_method,
                                output_layer_init_method)
 
         # Alibi
         if args.position_embedding_type == PositionEmbeddingType.alibi:
-            self.alibi = self._build_alibi_tensor(args.seq_length, args.num_attention_heads, args.micro_batch_size).to(torch.cuda.current_device())
+            self.alibi = self._build_alibi_tensor(args.seq_length, args.num_attention_heads,
+                                                  args.micro_batch_size).to(torch.cuda.current_device())
             if args.params_dtype == torch.float16:
                 self.alibi = self.alibi.to(torch.float16)
             elif args.params_dtype == torch.bfloat16:
@@ -501,10 +596,13 @@ class ParallelTransformerLayer(MegatronModule):
                 encoder_output=None, enc_dec_attn_mask=None,
                 layer_past=None, get_key_value=False):
         # hidden_states: [b, s, h]
+        # hidden_states: [batch_size, seq_length, hidden_size]
+        # 对输入数据进行Layer Norm
 
         # Layer norm at the beginning of the transformer layer.
         layernorm_output = self.input_layernorm(hidden_states)
         # Self attention.
+        # 自注意力
         attention_output, attention_bias = \
             self.self_attention(layernorm_output,
                                 attention_mask,
@@ -516,6 +614,7 @@ class ParallelTransformerLayer(MegatronModule):
             attention_output, presents = attention_output
 
         # Residual connection.
+        # 残差链接
         if self.apply_residual_connection_post_layernorm:
             residual = layernorm_output
         else:
@@ -525,6 +624,8 @@ class ParallelTransformerLayer(MegatronModule):
         # trigerring the fusion kernel. For now, we use two
         # different nn.functional routines to account for varying
         # dropout semantics during training and inference phases.
+
+        # dropout(attention_output+attention_bias)+residual
         if self.bias_dropout_fusion:
             if self.training:
                 bias_dropout_add_func = bias_dropout_add_fused_train
@@ -542,34 +643,36 @@ class ParallelTransformerLayer(MegatronModule):
                 self.hidden_dropout)
 
         # Layer norm post the self attention.
+        # 对注意力层的输出再进行一次Layer Norm
         layernorm_output = self.post_attention_layernorm(layernorm_input)
 
-        if self.layer_type == LayerType.decoder:
-            attention_output, attention_bias = \
-                self.inter_attention(layernorm_output,
-                                     enc_dec_attn_mask,
-                                     encoder_output=encoder_output)
-            # residual connection
-            if self.apply_residual_connection_post_layernorm:
-                residual = layernorm_output
-            else:
-                residual = layernorm_input
-
-            # re-enable torch grad to enable fused optimization.
-            with torch.enable_grad():
-                layernorm_input = bias_dropout_add_func(
-                    attention_output,
-                    attention_bias.expand_as(residual),
-                    residual,
-                    self.hidden_dropout)
-
-            # Layer norm post the decoder attention
-            layernorm_output = self.post_inter_attention_layernorm(layernorm_input)
+        # if self.layer_type == LayerType.decoder:
+        #     attention_output, attention_bias = \
+        #         self.inter_attention(layernorm_output,
+        #                              enc_dec_attn_mask,
+        #                              encoder_output=encoder_output)
+        #     # residual connection
+        #     if self.apply_residual_connection_post_layernorm:
+        #         residual = layernorm_output
+        #     else:
+        #         residual = layernorm_input
+        #
+        #     # re-enable torch grad to enable fused optimization.
+        #     with torch.enable_grad():
+        #         layernorm_input = bias_dropout_add_func(
+        #             attention_output,
+        #             attention_bias.expand_as(residual),
+        #             residual,
+        #             self.hidden_dropout)
+        #
+        #     # Layer norm post the decoder attention
+        #     layernorm_output = self.post_inter_attention_layernorm(layernorm_input)
 
         # MLP.
         mlp_output, mlp_bias = self.mlp(layernorm_output)
 
         # Second residual connection.
+        # 第二个残差链接
         if self.apply_residual_connection_post_layernorm:
             residual = layernorm_output
         else:
@@ -592,8 +695,17 @@ class ParallelTransformerLayer(MegatronModule):
     def _build_alibi_tensor(max_seq_len, num_attention_heads, batch_size):
         # Based on https://github.com/ofirpress/attention_with_linear_biases/blob/a35aaca144e0eb6b789dfcb46784c4b8e31b7983/fairseq/models/transformer.py#L742
         """Returns tensor shaped (batch_size * num_attention_heads, 1, max_seq_len)"""
+        """
+        max_seq_len: 最大输入序列长度
+        num_attention_heads：注意力头的数量
+        batch_size
 
+        返回张量的形状为: (batch_size * num_attention_heads/tp_world_size, 1, max_seq_len)
+        """
         def get_slopes(n):
+            """
+            获得斜率, n是注意力头的数量
+            """
             def get_slopes_power_of_2(n):
                 start = (2 ** (-2 ** -(math.log2(n) - 3)))
                 ratio = start
@@ -606,15 +718,25 @@ class ParallelTransformerLayer(MegatronModule):
                 return get_slopes_power_of_2(closest_power_of_2) + get_slopes(2 * closest_power_of_2)[0::2][
                                                                    :n - closest_power_of_2]
 
+        # slopes: (num_attention_heads)
         slopes = torch.Tensor(get_slopes(num_attention_heads))
+
+        # alibi: (num_attention_heads, 1, max_seq_len)
+        # alibi：每个注意力头对于每个位置都会有一个bias
         alibi = slopes.unsqueeze(1).unsqueeze(1) * torch.arange(max_seq_len).unsqueeze(0).unsqueeze(0).expand(
             num_attention_heads, -1, -1)
         
         #Select the part of the tensor that corresponds to our tensor parallel index.
+        # 选取张量并行索引对应的部分
         tp_world_size = mpu.get_tensor_model_parallel_world_size()
         tp_index = mpu.get_tensor_model_parallel_rank()
+
+        # 张量并行时，会将多个注意力头分配到不同的rank上
+        # 由于alibi和注意力头一一对应，因此需要选择当前注意力头对应的alibi
         alibi = alibi.reshape((tp_world_size, -1, *alibi.shape[1:]))[tp_index]
-        
+
+        # 为batch样本生成alibi
+        # alibi：(batch_size * num_attention_heads/tp_world_size, 1, max_seq_len)
         alibi = alibi.repeat(batch_size, 1, 1)
         return alibi
 

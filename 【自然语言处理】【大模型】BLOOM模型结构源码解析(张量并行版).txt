@@ -1,0 +1,207 @@
+【自然语言处理】【大模型】BLOOM模型结构源码解析(张量并行版)
+
+https://zhuanlan.zhihu.com/p/626444817
+
+BLOOM采用Megatron-DeepSpeed框架进行训练，其张量并行采用的是1D张量。
+本文基于BigScience开源的代码仓库Megatron-DeepSpeed，介绍张量并行版BLOOM的原理和结构。
+
+单机版的BLOOM可阅读文章：
+白强伟：【自然语言处理】【大模型】BLOOM模型结构源码解析(单机版)
+
+
+模型结构的实现依赖于mpu模块，建议阅读系列文章：
+
+【Megatron-DeepSpeed】张量并行工具代码mpu详解(一)：并行环境初始化
+【Megatron-DeepSpeed】张量并行工具代码mpu详解(二)：Collective通信操作的封装mappings
+【Megatron-DeepSpeed】张量并行工具代码mpu详解(三)：张量并行层的实现及测试
+【Megatron-DeepSpeed】张量并行工具代码mpu详解(四)：张量并行版Embedding层及交叉熵的实现及测试
+
+一、Embedding层
+通常来说，Transformer的Embedding层会包含3类Embedding，
+分别是：Word Embedding、Position Embedding和TokenType Embedding。
+Word Embedding将输入的单词映射为稠密向量、Position Embedding负责向Embedding中注入位置信息，
+TokenType Embedding则是向Embedding中注入token的类别。
+这三类Embedding采样相加的方式，获得最终的Embedding。
+
+Embedding = Word Embedding + Position Embedding + TokenType Embedding
+
+但是，BLOOM的位置信息是通过ALiBi的方法注入的，因此其不需要传统的Position Embedding。
+此外，TokenType Embedding也是一个可选项。
+
+张量并行版BLOOM的Embedding层代码位于megatron/model/language_model.py，其通过参数来指定三类Embedding的使用情况。
+这里展示并注释其核心代码：
+
+    class Embedding(MegatronModule):
+        """
+    ...
+
+二、激活函数
+激活函数的实现位于megatron/model/utils.py。
+
+BLOOM的激活采用GELU，其可以近似实现为：
+09.png
+
+def gelu_impl(x):
+    """OpenAI's gelu implementation."""
+    return 0.5 * x * (1.0 + torch.tanh(0.7978845608028654 * x *
+                                       (1.0 + 0.044715 * x * x)))
+def openai_gelu(x):
+    return gelu_impl(x)
+
+三、掩码(Mask)
+1. 原理
+不同于单机版，张量并行版的模型是用来预训练的。
+通常会按固定的长度对文本进行拼接和切分，因此不需要进行Padding，仅需要使用一种称为Causal Mask的掩码。
+Causal Mask用于保证当前token只能见到其左侧的token。
+
+给定一个长度为n的序列，yknote截图 10.png
+
+2. 实现
+原始代码位于megatron/model/fused_softmax.py，其将缩放、mask和softmax操作融合在一起。下面是简化版的代码，便于理解：
+
+    class FusedScaleMaskSoftmax(nn.Module):
+        """
+
+四、ALiBi：注入位置信息
+1. 原理
+BLOOM使用ALiBi来向模型注入位置信息。给定一个长度为。。。。
+yknote截图 11.png
+
+2. 实现
+ALiBi的实现位于megatron/model/transformer.py。
+
+实现时，斜率的计算采用 yknote截图 12.png
+
+此外，在张量并行中，注意力头会被分到张量并行组中不同的rank上，而ALiBi偏差与注意力头一一对应。
+因此，每个张量并行组中的不同rank需要持有不同注意力头对应的ALiBi偏差。
+所以，在实现时会计算出所有的ALiBi偏差，但仅取对应注意力头的偏差。
+
+    @staticmethod
+    def _build_alibi_tensor(max_seq_len, num_attention_heads, batch_size):
+        """
+    。。。。
+
+五、MLP层
+MLP层的实现位于megatron/model/transformer.py。
+
+模型结构上，MLP没什么特别地，主要是两个全连接层：
+    Y = MLP（X) = GELU(XW1)W2
+
+但是在实现时，第一个全连接层使用列并行，而第二个全连接层则使用行并行。整个过程如下图所示：
+13.png
+
+    class ParallelMLP(MegatronModule):
+    ....
+
+六、多头注意力层
+1. 原理
+BLOOM多头注意力就是在标准多头注意力上添加ALiBi。
+单头注意力：
+yknote截图 14.png
+Megatron-LM风格张量并行的多头注意力机制：
+
+Megatron-LM风格张量并行中，张量并行组中的不同rank负责不同的注意力头计算。
+
+2. 实现
+多头注意力层的实现位于megatron/model/transformer.py。
+由于原始代码会兼容各种参数，为了理解代码的逻辑，下面是原始代码的简化版本：
+
+    class ParallelAttention(MegatronModule):
+    。。。。
+
+七、并行Transformer层
+15.webp
+这里的并行Transformer层就对应单机版中的BlookBlock。代码位于megatron/model/transformer.py。
+
+    class ParallelTransformerLayer(MegatronModule):
+    。。。。
+
+八、并行Transformer以及Transformer语言模型
+实现并行Transformer的类ParallelTransformer位于megatron/model/transformer.py，
+其本质上就是堆叠了多个ParallelTransformerLayer。
+
+实现Transformer语言模型的类TransformerLanguageModel则位megatron/model/language_model.py，
+其在ParallelTransformer的开始处添加了Embedding层，并在末尾添加了一个Pooler。
+
+这两部分的逻辑比较简单，这里就不再罗列代码了。
+
+
+
+相关文章：
+
+白强伟：【自然语言处理】【大模型】另类大模型RETRO：通过从万亿tokens中检索来改善语言模型
+
+白强伟：【自然语言处理】【大模型】MPT模型结构源码解析(单机版)
+
+白强伟：【自然语言处理】【大模型】ChatGLM-6B模型结构代码解析(单机版)
+
+白强伟：【自然语言处理】【大模型】BLOOM模型结构源码解析(张量并行版)
+
+白强伟：【自然语言处理】【大模型】BLOOM模型结构源码解析(单机版)
+
+白强伟：【自然语言处理】【长文本处理】RMT：能处理长度超过一百万token的Transformer
+
+白强伟：【自然语言处理】【大模型】极低资源微调大模型方法LoRA以及BLOOM-LORA实现代码
+
+白强伟：【自然语言处理】【大模型】大语言模型BLOOM推理工具测试
+
+白强伟：【自然语言处理】【大模型】LaMDA：用于对话应用程序的语言模型
+
+白强伟：【自然语言处理】【大模型】Chinchilla：训练计算利用率最优的大语言模型
+
+白强伟：【自然语言处理】【大模型】BLOOM：一个176B参数且可开放获取的多语言模型
+
+白强伟：【自然语言处理】【大模型】GLM-130B：一个开源双语预训练语言模型
+
+编辑于 2023-08-03 22:29・IP 属地北京
+自然语言处理
+LLM（大型语言模型）
+分布式训练
+赞同 36
+5 条评论
+分享
+喜欢
+收藏
+申请转载
+
+
+发布一条带图评论吧
+
+5 条评论
+默认
+最新
+梦像云
+梦像云
+感谢作者的分享，我想知道的是最近会不会有 tp + pp 的教程学习一下，谢谢！
+
+08-28 · IP 属地北京
+回复
+喜欢
+dylanzap
+dylanzap
+Bloom模型的张亮并行和CodeGeeX的张亮并行有什么区别吗？
+
+06-26 · IP 属地广东
+回复
+喜欢
+lRobert
+lRobert
+请问一下，BLOOM的训练脚本在哪里可以找到？megatron-speed里面好像没有对应的训练脚本
+
+05-22 · IP 属地广东
+回复
+喜欢
+白强伟
+白强伟
+作者
+
+github.com/bigscience-w
+
+05-22 · IP 属地北京
+回复
+喜欢
+suc16
+suc16
+
+高产
+05-03 · IP 属地北京
