@@ -250,7 +250,6 @@ class VocabParallelEmbedding(torch.nn.Module):
 
         return output
 
-
 class ColumnParallelLinear(torch.nn.Module):
     """Linear layer with column parallelism.
 
@@ -274,7 +273,18 @@ class ColumnParallelLinear(torch.nn.Module):
                        can be fused with other elementwise operations. we skip
                        adding bias but instead return it.
     """
+    """
+        列并行线性层.
+        线性层定义为Y=XA+b. A沿着第二维进行并行，A = [A_1, ..., A_p]
 
+        参数:
+            input_size: 矩阵A的第一维度.
+            output_size: 矩阵A的第二维度.
+            bias: 若为true则添加bias.
+            gather_output: 若为true，在输出上调用all-gather，使得Y对所有GPT都可访问.
+            init_method: 随机初始化方法.
+            stride: strided线性层.
+    """
     def __init__(self, input_size, output_size, bias=True, gather_output=True,
                  init_method=init.xavier_normal_, stride=1,
                  keep_master_weight_for_test=False,
@@ -286,19 +296,25 @@ class ColumnParallelLinear(torch.nn.Module):
         self.output_size = output_size
         self.gather_output = gather_output
         # Divide the weight matrix along the last dimension.
+	    # 获得张量并行组的world_size
         world_size = get_tensor_model_parallel_world_size()
+        # 按照张量并行度(world_size)划分输出维度
         self.output_size_per_partition = divide(output_size, world_size)
         self.skip_bias_add = skip_bias_add
 
         # Parameters.
-        # Note: torch.nn.functional.linear performs XA^T + b and as a result
+        # Note: torch.nn.functional.linear performs XA^T + b and as a result 执行 XA^T+b
         # we allocate the transpose.
         # Initialize weight.
         args = get_args()
         if args.use_cpu_initialization:
+            # 初始化张量. 若完整权重矩阵A为n*m，张量并行度为k，这里初始化的张量为n*(m/k)
+            # 也就是张量并行组中的进程各自初始化持有的部分张量
             self.weight = Parameter(torch.empty(self.output_size_per_partition,
                                                 self.input_size,
                                                 dtype=args.params_dtype))
+            # 使用init_method对权重矩阵self.weight进行随机初始化(CPU版)
+            # self.master_weight在测试中使用，这里不需要关注
             self.master_weight = _initialize_affine_weight_cpu(
                 self.weight, self.output_size, self.input_size,
                 self.output_size_per_partition, 0, init_method,
@@ -307,10 +323,12 @@ class ColumnParallelLinear(torch.nn.Module):
             self.weight = Parameter(torch.empty(
                 self.output_size_per_partition, self.input_size,
                 device=torch.cuda.current_device(), dtype=args.params_dtype))
+            # 使用init_method对权重矩阵self.weight进行随机初始化(GPU版)
             _initialize_affine_weight_gpu(self.weight, init_method,
                                           partition_dim=0, stride=stride)
 
         if bias:
+            # 实例化一个bias
             if args.use_cpu_initialization:
                 self.bias = Parameter(torch.empty(
                     self.output_size_per_partition, dtype=args.params_dtype))
@@ -319,17 +337,19 @@ class ColumnParallelLinear(torch.nn.Module):
                     self.output_size_per_partition,
                     device=torch.cuda.current_device(),
                     dtype=args.params_dtype))
+            # 将张量并行的相关信息追加至self.bias
             set_tensor_model_parallel_attributes(self.bias, True, 0, stride)
             # Always initialize bias to zero.
+	    # bias初始化为0
             with torch.no_grad():
                 self.bias.zero_()
         else:
             self.register_parameter('bias', None)
 
-
-
     def forward(self, input_):
         # Set up backprop all-reduce.
+        # 前向传播时input_parallel就等于input_
+        # 反向传播时在张量并在组内将梯度allreduce
         input_parallel = copy_to_tensor_model_parallel_region(input_)
         # Matrix multiply.
 
@@ -337,8 +357,13 @@ class ColumnParallelLinear(torch.nn.Module):
         output_parallel = F.linear(input_parallel, self.weight, bias)
         if self.gather_output:
             # All-gather across the partitions.
+            # 收集张量并行组内的张量并进行拼接
+            # 此时，output是非张量并行情况下前向传播的输出
+            # 张量并行组中的进程都持有完全相同的output
             output = gather_from_tensor_model_parallel_region(output_parallel)
         else:
+            # 此时，output是张量并行情况下的前向传播输出
+            # 张量并行组中的进程持有不同的output
             output = output_parallel
         output_bias = self.bias if self.skip_bias_add else None
         return output, output_bias
@@ -373,6 +398,25 @@ class RowParallelLinear(torch.nn.Module):
                        can be fused with other elementwise operations. we skip
                        adding bias but instead return it.
     """
+    """
+    行并行线性层.
+    线性层的定义为Y = XA + b. x
+    A沿着第一个维度并行，X沿着第二个维度并行. 即
+               -   -
+              | A_1 |
+              | .   |
+          A = | .   |        X = [X_1, ..., X_p]
+              | .   |
+              | A_p |
+               -   -
+    参数:
+        input_size: 矩阵A的第一维度.
+        output_size: 矩阵A的第二维度.
+        bias: 若为true则添加bias.
+        input_is_parallel:  若为true，则认为输入应用被划分至各个GPU上，不需要进一步的划分.
+        init_method: 随机初始化方法.
+        stride: strided线性层.
+    """
 
     def __init__(self, input_size, output_size, bias=True,
                  input_is_parallel=False,
@@ -386,19 +430,26 @@ class RowParallelLinear(torch.nn.Module):
         self.output_size = output_size
         self.input_is_parallel = input_is_parallel
         # Divide the weight matrix along the last dimension.
+        # 获得张量并行组的world_size
         world_size = get_tensor_model_parallel_world_size()
+
+        # 按照张量并行度(world_size)划分输出维度
         self.input_size_per_partition = divide(input_size, world_size)
         self.skip_bias_add = skip_bias_add
 
         # Parameters.
-        # Note: torch.nn.functional.linear performs XA^T + b and as a result
+        # Note: torch.nn.functional.linear performs XA^T + b and as a result 执行 XA^T+b
         # we allocate the transpose.
         # Initialize weight.
         args = get_args()
         if args.use_cpu_initialization:
+            # 初始化张量. 若完整权重矩阵A为n*m，张量并行度为k，这里初始化的张量为n*(m/k)
+            # 也就是张量并行组中的进程各自初始化持有的部分张量
             self.weight = Parameter(torch.empty(self.output_size,
                                                 self.input_size_per_partition,
                                                 dtype=args.params_dtype))
+            # 使用init_method对权重矩阵self.weight进行随机初始化(CPU版)
+            # self.master_weight在测试中使用，这里不需要关注
             self.master_weight = _initialize_affine_weight_cpu(
                 self.weight, self.output_size, self.input_size,
                 self.input_size_per_partition, 1, init_method,
@@ -407,9 +458,11 @@ class RowParallelLinear(torch.nn.Module):
             self.weight = Parameter(torch.empty(
                 self.output_size, self.input_size_per_partition,
                 device=torch.cuda.current_device(), dtype=args.params_dtype))
+            # 使用init_method对权重矩阵self.weight进行随机初始化(GPU版)
             _initialize_affine_weight_gpu(self.weight, init_method,
                                           partition_dim=1, stride=stride)
         if bias:
+            # 实例化一个bias
             if args.use_cpu_initialization:
                 self.bias = Parameter(torch.empty(self.output_size,
                                                   dtype=args.params_dtype))
@@ -425,20 +478,24 @@ class RowParallelLinear(torch.nn.Module):
 
         self.bias_tp_auto_sync = args.sync_tp_duplicated_parameters
 
-
     def forward(self, input_):
         # Set up backprop all-reduce.
         if self.input_is_parallel:
             input_parallel = input_
         else:
+            # 前向传播时，将input_分片至张量并行组中的各个进程中
+            # 反向传播时，将张量并行组中持有的部分input_梯度合并为完整的梯度
+            # 此时，_input是完整的输入张量，input_parallel则是分片后的张量，即input_parallel!=_input
             input_parallel = scatter_to_tensor_model_parallel_region(input_)
         # Matrix multiply.
         output_parallel = F.linear(input_parallel, self.weight)
         # All-reduce across all the partitions.
+        # 对张量并行组中的输出进行allreduce，即操作X1A1+X2A2
         output_ = reduce_from_tensor_model_parallel_region(output_parallel)
 
         if self.bias_tp_auto_sync:
-            torch.distributed.all_reduce(self.bias, op=torch.distributed.ReduceOp.AVG, group=mpu.get_tensor_model_parallel_group())
+            torch.distributed.all_reduce(self.bias, op=torch.distributed.ReduceOp.AVG,
+                                         group=mpu.get_tensor_model_parallel_group())
 
         if not self.skip_bias_add:
             output = output_ + self.bias if self.bias is not None else output_

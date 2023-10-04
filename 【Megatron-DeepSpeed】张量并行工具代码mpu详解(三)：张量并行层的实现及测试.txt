@@ -1,0 +1,179 @@
+【Megatron-DeepSpeed】张量并行工具代码mpu详解(三)：张量并行层的实现及测试
+
+https://zhuanlan.zhihu.com/p/622036840
+
+Megatron-DeepSpeed是DeepSpeed版本的NVIDIA Megatron-LM。像BLOOM、GLM-130B等主流大模型都是基于Megatron-DeepSpeed开发的。
+这里以BLOOM版本的Megetron-DeepSpeed为例，介绍其模型并行代码mpu的细节(位于megatron/mpu下)。
+
+ 理解该部分的代码需要对模型并行的原理以及集合通信有一定的理解，可以看文章：
+
+白强伟：【深度学习】【分布式训练】Collective通信操作及Pytorch示例
+白强伟：【深度学习】【分布式训练】一文捋顺千亿模型训练技术：流水线并行、张量并行和3D并行
+白强伟：【深度学习】【分布式训练】DeepSpeed：AllReduce与ZeRO-DP
+白强伟：【Megatron-DeepSpeed】张量并行工具代码mpu详解(一)：并行环境初始化
+白强伟：【Megatron-DeepSpeed】张量并行工具代码mpu详解(二)：Collective通信操作的封装mappings
+
+
+阅读建议：
+1. 本文仅会解析核心代码，并会不介绍所有代码；
+2.本文会提供一些测试脚本来展现各部分代码的功能；
+3. 建议实际动手实操来加深理解；
+4. 建议对Collective通信以及分布式模型训练有一定理解，再阅读本文；
+
+
+一、总览
+ mpu目录下核心文件有：
+
+    initialize.py：负责数据并行组、张量并行组和流水线并行组的初始化，以及获取与各类并行组相关的信息；
+    data.py：实现张量并行中的数据广播功能；
+    cross_entropy.py：张量并行版本的交叉熵；
+    layers.py：并行版本的Embedding层，以及列并行线性层和行并行线性层；
+    mappings.py：用于张量并行的通信操作；
+
+二、1D张量并行原理
+ Megatron-DeepSpeed中的并行是1D张量并行，这里做简单的原理介绍。希望更深入全面的理解并行技术，可以阅读上面“千亿模型训练技术”的文章。
+
+04.webp
+
+ 以全链接层
+ 。。。。。
+
+05.png  yknote---截图
+
+
+三、张量并行的实现及测试
+1. 列并行
+ 列并行在前向传播时，张量并行组中的进程独立前向传播即可。假设张量并行度为2，则神经网络的前向传播可以简单表示为：
+
+06.png
+
+因此，反向传播时需要对张量并行组中各个独立的梯度进行求和。
+
+源代码
+    class ColumnParallelLinear(torch.nn.Module):
+    。。。
+
+测试代码
+ 测试遵循文章【Megatron-DeepSpeed】张量并行工具代码mpu详解(一)：并行环境初始化 中的设置，张量并行度为2，且流水线并行度为2。
+
+    def test_column_parallel_linear():
+    。。。
+
+测试结果
+
+
+
+ 可以看到，没有并行情况下的期望输出为(6,4)。张量并行度为2的情况下，各个rank的输出维度为(6,2)。
+
+2. 行并行
+ 行并行在前向传播时，...
+07.png
+
+源代码
+    class RowParallelLinear(torch.nn.Module):
+        """
+    ....
+测试代码
+ 由于列并行层RowParallelLinear完成屏蔽了内部的并行细节，无法从输入输出中理解其执行过程。因此，这里的测试会对其forward方法进行重写，以便展现细节。
+
+class MyRowParallelLinear(mpu.RowParallelLinear):
+ ....
+
+
+测试结果
+
+
+四、完整测试代码
+    # test_layers.py
+    ...
+
+
+相关文章：
+
+白强伟：【Megatron-DeepSpeed】张量并行工具代码mpu详解(四)：张量并行版Embedding层及交叉熵的实现及测试
+
+白强伟：【Megatron-DeepSpeed】张量并行工具代码mpu详解(三)：张量并行层的实现及测试
+
+白强伟：【Megatron-DeepSpeed】张量并行工具代码mpu详解(二)：Collective通信操作的封装mappings
+
+白强伟：【Megatron-DeepSpeed】张量并行工具代码mpu详解(一)：并行环境初始化
+
+白强伟：【深度学习】【分布式训练】一文捋顺千亿模型训练技术：流水线并行、张量并行和3D并行
+
+白强伟：【自然语言处理】【大模型】DeepSpeed+Transformers：简单快捷上手百亿参数模型微调
+
+白强伟：【深度学习】【分布式训练】DeepSpeed：AllReduce与ZeRO-DP
+
+白强伟：【深度学习】混合精度训练与显存分析
+
+白强伟：【自然语言处理】【大模型】大语言模型BLOOM推理工具测试
+
+白强伟：【自然语言处理】【大模型】BLOOM：一个176B参数且可开放获取的多语言模型
+
+编辑于 2023-04-22 10:50・IP 属地北京
+
+发布一条带图评论吧
+
+7 条评论
+默认
+最新
+jeejeeeleeee
+jeejeeeleeee
+请问，模型并行跟张量并行是一回事吗，谢谢大佬
+
+04-28 · IP 属地四川
+回复
+喜欢
+白强伟
+白强伟
+作者
+
+毕竟流失线并行称之为模型并行，也没有错误[调皮]
+04-28 · IP 属地北京
+回复
+喜欢
+jeejeeeleeee
+jeejeeeleeee
+白强伟
+谢谢您的解答，我就是感觉有点乱[大笑]
+
+04-28 · IP 属地四川
+回复
+喜欢
+白强伟
+白强伟
+作者
+
+在有些文献里，模型并行指的就是张量并行～但也有不是的情况，比较乱
+04-28 · IP 属地北京
+回复
+喜欢
+黄洋
+黄洋
+
+你好，分布式环境初始化后，使用deepspeed启动脚本，pipeline-model-parallel设置好了。
+deepspeed会自动把模型按照pipeline-model-parallel参数进行切分吧。
+比方说模型10层，pipeline-model-parallel为2，每张显卡上会自动分配0-5layers以及6-10layers吧
+
+
+
+还有个问题就是模型自动切分，每个GPU上会考虑参数负载平衡吗？
+Embedding层参数很大，中间层参数比较小，最后一层lm_head又很大，流水线并行的时候的时候会考虑这些东西吗？
+
+04-23 · IP 属地湖北
+回复
+喜欢
+白强伟
+白强伟
+作者
+
+deepspeed.ai/tutorials/，Load Balancing Pipeline Modules小节，有三种配置可选
+04-23 · IP 属地北京
+回复
+喜欢
+黄洋
+黄洋
+
+白强伟
+了解了谢谢
+04-24 · IP 属地湖北
