@@ -22,8 +22,7 @@ import numpy
 import torch
 
 import megatron.mpu as mpu # 由于本文测试代码位于项目的根目录下，因此修改了mpu的import方式
-​
-​
+
 class IdentityLayer(torch.nn.Module):
     """
     一个单层网络，会在测试cross_entropy.py时使用。
