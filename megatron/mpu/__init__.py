@@ -14,7 +14,8 @@
 # limitations under the License.
 
 """Model parallel utility interface."""
-
+import sys
+sys.path.append("../../")
 from .cross_entropy import vocab_parallel_cross_entropy
 
 from .data import broadcast_data

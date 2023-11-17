@@ -2,8 +2,9 @@
 import sys
 sys.path.append("..")
 
-from commons import print_separator
-from commons import initialize_distributed
+from megatron.mpu.tests.commons import print_separator
+# noinspection PyInterpreter
+from megatron.mpu.tests.commons import initialize_distributed
 import megatron.mpu as mpu
 import torch
 

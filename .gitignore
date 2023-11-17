@@ -3,6 +3,8 @@
 tests/data/*/*npy
 tests/tools/openwebtext-1000.jsonl
 tmp/
+data/*
+oscar-1GB.jsonl
 
 # macOS
 .DS_Store

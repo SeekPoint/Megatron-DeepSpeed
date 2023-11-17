@@ -84,8 +84,14 @@ def initialize_model_parallel(tensor_model_parallel_size_=1,
     # Get world size and rank. Ensure some consistencies.
     assert torch.distributed.is_initialized()
     world_size = torch.distributed.get_world_size()
+
+    print("world_size is:", world_size)
+    print("tensor_model_parallel_size is:", tensor_model_parallel_size_)
+    print("pipeline_model_parallel_size_ is:", pipeline_model_parallel_size_)
+
     tensor_model_parallel_size = min(tensor_model_parallel_size_, world_size)
     pipeline_model_parallel_size = min(pipeline_model_parallel_size_, world_size)
+
     ensure_divisibility(world_size,
                         tensor_model_parallel_size * pipeline_model_parallel_size)
     data_parallel_size = world_size // (tensor_model_parallel_size *

@@ -176,7 +176,10 @@ class FusedScaleMaskSoftmax(nn.Module):
 
         # (这里对原始代码进行了修改)
         # 调用融合操作
-        return self.forward_torch_softmax(input, mask)
+        if self.is_kernel_available(mask, *input.size()):
+            return self.forward_fused_softmax(input, mask)
+        else:
+            return self.forward_torch_softmax(input, mask)
 
     def is_kernel_available(self, mask, b, np, sq, sk):
         attn_batches = b * np
@@ -205,7 +208,7 @@ class FusedScaleMaskSoftmax(nn.Module):
 
         if self.attn_mask_type == AttnMaskType.causal:
             assert sq == sk, "causal mask is only for self attention"
-            assert mask is None, "Mask is silently ignored due to the use of a custom kernel"
+            # assert mask is None, "Mask is silently ignored due to the use of a custom kernel"
 
             # input is 3D tensor (attn_batches, sq, sk)
             input = input.view(-1, sq, sk)

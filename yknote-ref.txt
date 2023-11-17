@@ -1,0 +1,17 @@
+白强伟：【Megatron-DeepSpeed】张量并行工具代码mpu详解(四)：张量并行版Embedding层及交叉熵的实现及测试
+白强伟：【Megatron-DeepSpeed】张量并行工具代码mpu详解(三)：张量并行层的实现及测试
+白强伟：【Megatron-DeepSpeed】张量并行工具代码mpu详解(二)：Collective通信操作的封装mappings
+白强伟：【Megatron-DeepSpeed】张量并行工具代码mpu详解(一)：并行环境初始化
+https://zhuanlan.zhihu.com/p/619914112
+这些改动似乎会导致错误！！！
+==========
+
+
+https://zhuanlan.zhihu.com/p/636334367
+【DeepSpeed 教程翻译】二，Megatron-LM GPT2，Zero Redundancy Optimizer 和 ZeRO-Offload
+
+https://zhuanlan.zhihu.com/p/579709267
+从零开始 预训练 GPT
+
+build和data主要参考这个
+https://help.aliyun.com/zh/ecs/use-cases/use-the-megatron-deepspeed-training-gpt-2-and-generate-text

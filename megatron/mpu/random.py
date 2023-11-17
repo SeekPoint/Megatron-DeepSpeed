@@ -24,6 +24,8 @@ from torch import _C
 from torch.cuda import _lazy_call, device as device_ctx_manager
 from torch.utils.checkpoint import detach_variable
 
+import sys
+sys.path.append("../../")
 from megatron import get_args
 from megatron.memory import allocate_mem_buff
 

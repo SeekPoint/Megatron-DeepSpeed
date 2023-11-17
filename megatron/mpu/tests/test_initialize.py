@@ -18,7 +18,8 @@ from commons import initialize_distributed
 import mpu
 import torch
 import sys
-sys.path.append("../..")
+sys.path.append("../../")
+sys.path.append("../../../")
 
 
 def test_initialize_model_parallel(tensor_model_parallel_size):

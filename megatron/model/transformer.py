@@ -171,32 +171,32 @@ class ParallelAttention(MegatronModule):
 
         # (这里对原始代码进行了简化)
         # 计算Q、K、V的投影层，这里使用列并行(实现注意力并行的关键)
-        self.query_key_value = mpu.ColumnParallelLinear(
-             args.hidden_size,
-             3 * projection_size,
-             gather_output=False, # 不进行all_gather，保证后续的处理是张量并行的
-             init_method=init_method)
+        # self.query_key_value = mpu.ColumnParallelLinear(
+        #      args.hidden_size,
+        #      3 * projection_size,
+        #      gather_output=False, # 不进行all_gather，保证后续的处理是张量并行的
+        #      init_method=init_method)
 
-        # # Strided linear layer.
-        # if attention_type == AttnType.self_attn:
-        #     self.query_key_value = mpu.ColumnParallelLinear(
-        #         args.hidden_size,
-        #         3 * projection_size,
-        #         gather_output=False,  # 不进行all_gather，保证后续的处理是张量并行的
-        #         init_method=init_method)
-        # else:
-        #     assert attention_type == AttnType.cross_attn
-        #     self.query = mpu.ColumnParallelLinear(
-        #         args.hidden_size,
-        #         projection_size,
-        #         gather_output=False,
-        #         init_method=init_method)
-        #
-        #     self.key_value = mpu.ColumnParallelLinear(
-        #         args.hidden_size,
-        #         2 * projection_size,
-        #         gather_output=False,
-        #         init_method=init_method)
+        # Strided linear layer.
+        if attention_type == AttnType.self_attn:
+            self.query_key_value = mpu.ColumnParallelLinear(
+                args.hidden_size,
+                3 * projection_size,
+                gather_output=False,  # 不进行all_gather，保证后续的处理是张量并行的
+                init_method=init_method)
+        else:
+            assert attention_type == AttnType.cross_attn
+            self.query = mpu.ColumnParallelLinear(
+                args.hidden_size,
+                projection_size,
+                gather_output=False,
+                init_method=init_method)
+
+            self.key_value = mpu.ColumnParallelLinear(
+                args.hidden_size,
+                2 * projection_size,
+                gather_output=False,
+                init_method=init_method)
 
         # query和key点积的缩放因子
         coeff = None
@@ -229,13 +229,13 @@ class ParallelAttention(MegatronModule):
             init_method=output_layer_init_method,
             skip_bias_add=True)
 
-        # if deepspeed.checkpointing.is_configured():
-        #     global get_cuda_rng_tracker, checkpoint
-        #     get_cuda_rng_tracker = deepspeed.checkpointing.get_cuda_rng_tracker
-        #     checkpoint = deepspeed.checkpointing.checkpoint
-        #
-        # if self.position_embedding_type == PositionEmbeddingType.rotary:
-        #     self.rotary_emb = RotaryEmbedding(self.hidden_size_per_attention_head, precision=args.params_dtype)
+        if deepspeed.checkpointing.is_configured():
+            global get_cuda_rng_tracker, checkpoint
+            get_cuda_rng_tracker = deepspeed.checkpointing.get_cuda_rng_tracker
+            checkpoint = deepspeed.checkpointing.checkpoint
+
+        if self.position_embedding_type == PositionEmbeddingType.rotary:
+            self.rotary_emb = RotaryEmbedding(self.hidden_size_per_attention_head, precision=args.params_dtype)
 
     def forward(self, hidden_states, attention_mask, layer_past=None,
                 get_key_value=False, encoder_output=None, alibi=None):
@@ -248,63 +248,63 @@ class ParallelAttention(MegatronModule):
         # 计算Query, Key, and Value
         # =====================
 
-        # [seq_length, batch_size, hidden_size] --> [seq_length, batch_size, (3*np*hn)]
-        # 注：这里的投影层是列并行层，经过投影后，张量并行组中的各个rank持有不同的mixed_x_layer
-        mixed_x_layer, _ = self.query_key_value(hidden_states)
+        # # [seq_length, batch_size, hidden_size] --> [seq_length, batch_size, (3*np*hn)]
+        # # 注：这里的投影层是列并行层，经过投影后，张量并行组中的各个rank持有不同的mixed_x_layer
+        # mixed_x_layer, _ = self.query_key_value(hidden_states)
+        #
+        # # 调整maxed_x_layer的形状
+        # # (seq_length, batch_size, (3*np*hn)) --> (seq_length, batch_size, np, 3*hn)
+        # new_tensor_shape = mixed_x_layer.size()[:-1] + \
+        #                    (self.num_attention_heads_per_partition,
+        #                     3 * self.hidden_size_per_attention_head)
+        # mixed_x_layer = mixed_x_layer.view(*new_tensor_shape)
+        #
+        # # 将Q、K、V拆分处理
+        # # [seq_length, batch_size, np, 3*hn] --> 3 [seq_length, batch_size, np, hn]
+        # (query_layer,
+        #  key_layer,
+        #  value_layer) = mpu.split_tensor_along_last_dim(mixed_x_layer, 3)
 
-        # 调整maxed_x_layer的形状
-        # (seq_length, batch_size, (3*np*hn)) --> (seq_length, batch_size, np, 3*hn)
-        new_tensor_shape = mixed_x_layer.size()[:-1] + \
-                           (self.num_attention_heads_per_partition,
-                            3 * self.hidden_size_per_attention_head)
-        mixed_x_layer = mixed_x_layer.view(*new_tensor_shape)
+        if self.attention_type == AttnType.self_attn:
+            # Attention heads [sq, b, h] --> [sq, b, (np * 3 * hn)]
+            # [seq_length, batch_size, hidden_size] --> [seq_length, batch_size, (3*np*hn)]
+            # 注：这里的投影层是列并行层，经过投影后，张量并行组中的各个rank持有不同的mixed_x_layer
+            mixed_x_layer, _ = self.query_key_value(hidden_states)
 
-        # 将Q、K、V拆分处理
-        # [seq_length, batch_size, np, 3*hn] --> 3 [seq_length, batch_size, np, hn]
-        (query_layer,
-         key_layer,
-         value_layer) = mpu.split_tensor_along_last_dim(mixed_x_layer, 3)
+            # [sq, b, (np * 3 * hn)] --> [sq, b, np, 3 * hn]
+            # 调整maxed_x_layer的形状
+            # (seq_length, batch_size, (3*np*hn)) --> (seq_length, batch_size, np, 3*hn)
+            new_tensor_shape = mixed_x_layer.size()[:-1] + \
+                               (self.num_attention_heads_per_partition,
+                                3 * self.hidden_size_per_attention_head)
+            mixed_x_layer = mixed_x_layer.view(*new_tensor_shape)
+            #           #将Q、K、V拆分处理
+            # [seq_length, batch_size, np, 3*hn] --> 3 [seq_length, batch_size, np, hn]
+            # [sq, b, np, 3 * hn] --> 3 [sq, b, np, hn]
+            (query_layer,
+             key_layer,
+             value_layer) = mpu.split_tensor_along_last_dim(mixed_x_layer, 3)
+        else:
+            # Attention heads [sk, b, h] --> [sk, b, (np * 2 * hn)]
+            mixed_kv_layer, _ = self.key_value(encoder_output)
 
-        # if self.attention_type == AttnType.self_attn:
-        #     # Attention heads [sq, b, h] --> [sq, b, (np * 3 * hn)]
-        #     # [seq_length, batch_size, hidden_size] --> [seq_length, batch_size, (3*np*hn)]
-        #     # 注：这里的投影层是列并行层，经过投影后，张量并行组中的各个rank持有不同的mixed_x_layer
-        #     mixed_x_layer, _ = self.query_key_value(hidden_states)
-        #
-        #     # [sq, b, (np * 3 * hn)] --> [sq, b, np, 3 * hn]
-        #     # 调整maxed_x_layer的形状
-        #     # (seq_length, batch_size, (3*np*hn)) --> (seq_length, batch_size, np, 3*hn)
-        #     new_tensor_shape = mixed_x_layer.size()[:-1] + \
-        #                        (self.num_attention_heads_per_partition,
-        #                         3 * self.hidden_size_per_attention_head)
-        #     mixed_x_layer = mixed_x_layer.view(*new_tensor_shape)
-        #     #           #将Q、K、V拆分处理
-        #     # [seq_length, batch_size, np, 3*hn] --> 3 [seq_length, batch_size, np, hn]
-        #     # [sq, b, np, 3 * hn] --> 3 [sq, b, np, hn]
-        #     (query_layer,
-        #      key_layer,
-        #      value_layer) = mpu.split_tensor_along_last_dim(mixed_x_layer, 3)
-        # else:
-        #     # Attention heads [sk, b, h] --> [sk, b, (np * 2 * hn)]
-        #     mixed_kv_layer, _ = self.key_value(encoder_output)
-        #
-        #     # [sk, b, (np * 2 * hn)] --> [sk, b, np, 2 * hn]
-        #     new_tensor_shape = mixed_kv_layer.size()[:-1] + \
-        #                        (self.num_attention_heads_per_partition,
-        #                         2 * self.hidden_size_per_attention_head)
-        #     mixed_kv_layer = mixed_kv_layer.view(*new_tensor_shape)
-        #
-        #     # [sk, b, np, 2 * hn] --> 2 [sk, b, np, hn]
-        #     (key_layer,
-        #      value_layer) = mpu.split_tensor_along_last_dim(mixed_kv_layer, 2)
-        #
-        #     # Attention head [sq, b, h] --> [sq, b, hp]
-        #     query_layer, _ = self.query(hidden_states)
-        #     # [sq, b, hp] --> [sq, b, np, hn]
-        #     new_tensor_shape = query_layer.size()[:-1] + \
-        #                        (self.num_attention_heads_per_partition,
-        #                         self.hidden_size_per_attention_head)
-        #     query_layer = query_layer.view(*new_tensor_shape)
+            # [sk, b, (np * 2 * hn)] --> [sk, b, np, 2 * hn]
+            new_tensor_shape = mixed_kv_layer.size()[:-1] + \
+                               (self.num_attention_heads_per_partition,
+                                2 * self.hidden_size_per_attention_head)
+            mixed_kv_layer = mixed_kv_layer.view(*new_tensor_shape)
+
+            # [sk, b, np, 2 * hn] --> 2 [sk, b, np, hn]
+            (key_layer,
+             value_layer) = mpu.split_tensor_along_last_dim(mixed_kv_layer, 2)
+
+            # Attention head [sq, b, h] --> [sq, b, hp]
+            query_layer, _ = self.query(hidden_states)
+            # [sq, b, hp] --> [sq, b, np, hn]
+            new_tensor_shape = query_layer.size()[:-1] + \
+                               (self.num_attention_heads_per_partition,
+                                self.hidden_size_per_attention_head)
+            query_layer = query_layer.view(*new_tensor_shape)
 
         # ==================================
         # Adjust key and value for inference
@@ -343,88 +343,91 @@ class ParallelAttention(MegatronModule):
         key_layer = key_layer.view(output_size[3],
                                    output_size[0] * output_size[1], -1)
 
-        # # preallocting result tensor: [b * np, sq, sk]
-        # if alibi is None:
-        #     matmul_result = torch.empty(
-        #         output_size[0] * output_size[1],
-        #         output_size[2],
-        #         output_size[3],
-        #         dtype=query_layer.dtype,
-        #         device=torch.cuda.current_device())
-        # else:
-        #     matmul_result = alibi[:output_size[0] * output_size[1], :, :output_size[3]]
+        # preallocting result tensor: [b * np, sq, sk]
+        if alibi is None:
+            matmul_result = torch.empty(
+                output_size[0] * output_size[1],
+                output_size[2],
+                output_size[3],
+                dtype=query_layer.dtype,
+                device=torch.cuda.current_device())
+        else:
+            matmul_result = alibi[:output_size[0] * output_size[1], :, :output_size[3]]
 
-        # (这里修改了原始代码)
-        # matmul_result：当然rank的alibi偏差
-        matmul_result = alibi[:output_size[0]*output_size[1], :, :output_size[3]]
+        # # (这里修改了原始代码)
+        # # matmul_result：当然rank的alibi偏差
+        # matmul_result = alibi[:output_size[0]*output_size[1], :, :output_size[3]]
 
         # (这里去掉了Rotary embeddings，因为没有使用)
         # Rotary embeddings
-        # if self.position_embedding_type == PositionEmbeddingType.rotary:
-        #     apply_rotary_fn = apply_rotary_pos_emb_torch if self.bf16 else apply_rotary_pos_emb
-        #
-        #     seq_len = key_layer.shape[0]
-        #     offset = 0
-        #     if layer_past is not None and layer_past.numel() > 0:
-        #         offset = layer_past[0].shape[0]
-        #         seq_len += offset
-        #     cos, sin = self.rotary_emb(value_layer, seq_len=seq_len)
-        #     query_layer, key_layer = apply_rotary_fn(query_layer, key_layer, cos, sin, offset=offset)
+        if self.position_embedding_type == PositionEmbeddingType.rotary:
+            apply_rotary_fn = apply_rotary_pos_emb_torch if self.bf16 else apply_rotary_pos_emb
+
+            seq_len = key_layer.shape[0]
+            offset = 0
+            if layer_past is not None and layer_past.numel() > 0:
+                offset = layer_past[0].shape[0]
+                seq_len += offset
+            cos, sin = self.rotary_emb(value_layer, seq_len=seq_len)
+            query_layer, key_layer = apply_rotary_fn(query_layer, key_layer, cos, sin, offset=offset)
 
         # Raw attention scores. [b * np, sq, sk]
-        # if alibi is None:
-        #     matmul_result = torch.baddbmm(
-        #         matmul_result,
-        #         query_layer.transpose(0, 1),  # [b * np, sq, hn]
-        #         key_layer.transpose(0, 1).transpose(1, 2),  # [b * np, hn, sk]
-        #         beta=0.0, alpha=(1.0 / self.norm_factor))
-        # else:
-        #     if not hasattr(self, "logged_alibi"):
-        #         logger.debug("Using Alibi.")
-        #         self.logged_alibi = True
-        #
-        #     if self.apply_query_key_layer_scaling:
-        #         beta = 1.0 / self.layer_number
-        #     else:
-        #         beta = 1.0
-        #
-        #     matmul_result = torch.baddbmm(
-        #         matmul_result,
-        #         query_layer.transpose(0, 1),  # [b * np, sq, hn]
-        #         key_layer.transpose(0, 1).transpose(1, 2),  # [b * np, hn, sk]
-        #         beta=beta, alpha=(1.0 / self.norm_factor))
-        # 注意力分数，[batch_size * np, seq_length, seq_length]
-        if self.apply_query_key_layer_scaling:
-            beta = 1.0 / self.layer_number
+        if alibi is None:
+            matmul_result = torch.baddbmm(
+                matmul_result,
+                query_layer.transpose(0, 1),  # [b * np, sq, hn]
+                key_layer.transpose(0, 1).transpose(1, 2),  # [b * np, hn, sk]
+                beta=0.0, alpha=(1.0 / self.norm_factor))
         else:
-            beta = 1.0
-        # QK^T*alpha+alibi*beta
-        matmul_result = torch.baddbmm(
-            matmul_result,
-            query_layer.transpose(0, 1),
-            key_layer.transpose(0, 1).transpose(1, 2),
-            beta=beta, alpha=(1.0 / self.norm_factor))
+            if not hasattr(self, "logged_alibi"):
+                logger.debug("Using Alibi.")
+                self.logged_alibi = True
+
+            if self.apply_query_key_layer_scaling:
+                beta = 1.0 / self.layer_number
+            else:
+                beta = 1.0
+
+            matmul_result = torch.baddbmm(
+                matmul_result,
+                query_layer.transpose(0, 1),  # [b * np, sq, hn]
+                key_layer.transpose(0, 1).transpose(1, 2),  # [b * np, hn, sk]
+                beta=beta, alpha=(1.0 / self.norm_factor))
+        # 注意力分数，[batch_size * np, seq_length, seq_length]
+
+
+        # if self.apply_query_key_layer_scaling:
+        #     beta = 1.0 / self.layer_number
+        # else:
+        #     beta = 1.0
+        # # QK^T*alpha+alibi*beta
+        # matmul_result = torch.baddbmm(
+        #     matmul_result,
+        #     query_layer.transpose(0, 1),
+        #     key_layer.transpose(0, 1).transpose(1, 2),
+        #     beta=beta, alpha=(1.0 / self.norm_factor))
 
         # change view to [b, np, sq, sk]
         # 重塑形状: [batch_size, np, seq_length, seq_length]
         attention_scores = matmul_result.view(*output_size)
+
         # ==================================================
         # Update attention mask for inference. [b, np, sq, sk]
         # ==================================================
 
-        # if get_key_value:
-        #     with torch.no_grad():
-        #         # TODO @thomasw21 Handle case where `attention_mask` is None
-        #         if layer_past is not None:
-        #             attention_mask = attention_mask[
-        #                              ...,
-        #                              attention_scores.size(3) - 1,
-        #                              :attention_scores.size(3)].unsqueeze(2)
-        #         else:
-        #             attention_mask = attention_mask[
-        #                              ...,
-        #                              :attention_scores.size(3),
-        #                              :attention_scores.size(3)]
+        if get_key_value:
+            with torch.no_grad():
+                # TODO @thomasw21 Handle case where `attention_mask` is None
+                if layer_past is not None:
+                    attention_mask = attention_mask[
+                                     ...,
+                                     attention_scores.size(3) - 1,
+                                     :attention_scores.size(3)].unsqueeze(2)
+                else:
+                    attention_mask = attention_mask[
+                                     ...,
+                                     :attention_scores.size(3),
+                                     :attention_scores.size(3)]
 
         # ===========================
         # Attention probs and dropout

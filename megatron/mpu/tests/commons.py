@@ -21,6 +21,8 @@ import random
 import numpy
 import torch
 
+from pydebug import debuginfo
+
 import megatron.mpu as mpu # 由于本文测试代码位于项目的根目录下，因此修改了mpu的import方式
 
 class IdentityLayer(torch.nn.Module):
@@ -61,7 +63,12 @@ def initialize_distributed(backend='nccl'):
           'rank: {}, world size: {}'.format(local_rank, rank, world_size))
 
     # Set the device id.
-    device = rank % torch.cuda.device_count()
+    devices = torch.cuda.device_count()
+    debuginfo(prj='mega_ds', info=f'torch.cuda.device_count() is: {devices}')
+
+    device = rank % devices
+    debuginfo(prj='mega_ds', info=f'device is: {device}')
+
     if local_rank is not None:
         device = local_rank
     torch.cuda.set_device(device)
@@ -69,15 +76,15 @@ def initialize_distributed(backend='nccl'):
     # Call the init process.
     # 初始化分布式环境所需要的相关代码
     init_method = 'tcp://'
-    master_ip = os.getenv('MASTER_ADDR', 'localhost')
+    master_ip = os.getenv('MASTER_ADDR', '192.168.1.11')
     master_port = os.getenv('MASTER_PORT', '6000')
     init_method += master_ip + ':' + master_port
+    debuginfo(prj='mega_ds', info=f'init_method is: {init_method}')
     torch.distributed.init_process_group(
         backend=backend, # 使用gpu时，backend最好选择nccl
         world_size=world_size,
         rank=rank,
         init_method=init_method)
-
 
 def print_separator(message):
     """
