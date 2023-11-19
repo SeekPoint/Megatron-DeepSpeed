@@ -1,0 +1,187 @@
+
+(base) Megatron-DeepSpeed$ conda create -n gh_Megatron-DeepSpeed python=3.10 Anaconda
+(base) Megatron-DeepSpeed$ conda activate gh_Megatron-DeepSpeed
+(gh_Megatron-DeepSpeed) $ python -m pip install -r requirements.txt  ==会安装错误pytorch/numpy版本
+python -m pip install numpy==1.22 -i https://pypi.org/simple
+pip3 install torch==1.13.1+cu117 torchvision==0.14.1+cu117 torchaudio==0.13.1 --extra-index-url https://download.pytorch.org/whl/cu117
+
+(gh_Megatron-DeepSpeed) amd00@MZ32-00:~/yk_repo/Megatron-DeepSpeed/apex$ git branch
+* (HEAD detached at 3303b3e)
+  22.03
+
+(gh_Megatron-DeepSpeed) amd00@MZ32-00:~/yk_repo/Megatron-DeepSpeed/apex$
+cd a
+Megatron-DeepSpeed/apex$ python setup.py install
+
+(gh_Megatron-DeepSpeed) amd00@MZ32-00:~/yk_repo/Megatron-DeepSpeed$ conda install -c "nvidia/label/cuda-11.7.0" cuda
+
+
+====================================conda还是太容易出错======改为docker！！！
+但是此文件的各种技巧仍然适用docker！！！！
+
+(gh_Megatron-DeepSpeed) amd00@MZ32-00:~/llm_dev/Megatron-DeepSpeed$ bash pretrain_gpt2.sh
+/home/amd00/anaconda3/envs/gh_Megatron-DeepSpeed/lib/python3.10/site-packages/torch/distributed/launch.py:180: FutureWarning: The module torch.distributed.launch is deprecated
+and will be removed in future. Use torchrun.
+Note that --use_env is set by default in torchrun.
+If your script expects `--local_rank` argument to be set, please
+change it to read from `os.environ['LOCAL_RANK']` instead. See
+https://pytorch.org/docs/stable/distributed.html#launch-utility for
+further instructions
+.....
+  File "/home/amd00/llm_dev/Megatron-DeepSpeed/megatron/utils.py", line 27, in <module>
+    from apex.multi_tensor_apply import multi_tensor_applier
+  File "/home/amd00/anaconda3/envs/gh_Megatron-DeepSpeed/lib/python3.10/site-packages/apex/__init__.py", line 13, in <module>
+    from pyramid.session import UnencryptedCookieSessionFactoryConfig
+ImportError: cannot import name 'UnencryptedCookieSessionFactoryConfig' from 'pyramid.session' (unknown location)
+
+解决，安装apex！！！
+================================================================
+安装apex遇到
+no packageing
+错误
+
+
+解决：
+
+可能的版本
+git checkout 3303b3e7174383312a3468ef390060c26e640cb1
+
+确保pytorch版本正确
+pip3 install torch==1.13.1+cu117 torchvision==0.14.1+cu117 torchaudio==0.13.1 --extra-index-url https://download.pytorch.org/whl/cu117
+
+(gh_Megatron-DeepSpeed) amd00@MZ32-00:~/yk_repo/Megatron-DeepSpeed/apex$
+pip install -v --disable-pip-version-check --no-cache-dir --no-build-isolation --global-option="--cpp_ext" --global-option="--cuda_ext" ./  ===docker中有效
+Using pip 23.2.1 from /home/amd00/anaconda3/envs/gh_Megatron-DeepSpeed/lib/python3.10/site-packages/pip (python 3.10)
+.....
+  FileNotFoundError: [Errno 2] No such file or directory: '/usr/local/cuda-11.7/bin/nvcc'
+  error: subprocess-exited-with-error
+====nvcc已经通过conda安装，这种情况很可能是$CUDA_HOME引起的，还是指向系统的 /usr/local/cuda-11.7
+(gh_Megatron-DeepSpeed) amd00@MZ32-00:~/yk_repo/Megatron-DeepSpeed/apex$ find /home/amd00/anaconda3/envs/gh_Megatron-DeepSpeed/ -name nvcc
+/home/amd00/anaconda3/envs/gh_Megatron-DeepSpeed/bin/nvcc    ===conda的nvcc路径
+(gh_Megatron-DeepSpeed) amd00@MZ32-00:~/yk_repo/Megatron-DeepSpeed/apex$ echo $CUDA_HOME
+/usr/local/cuda-11.7   ==错误使用的
+(gh_Megatron-DeepSpeed) amd00@MZ32-00:~/yk_repo/Megatron-DeepSpeed/apex$ conda env config vars set CUDA_HOME=""   ===解除变量
+To make your changes take effect please reactivate your environment
+(gh_Megatron-DeepSpeed) amd00@MZ32-00:~/yk_repo/Megatron-DeepSpeed/apex$ conda deactivate
+amd00@MZ32-00:~/yk_repo/Megatron-DeepSpeed/apex$ conda activate gh_Megatron-DeepSpeed
+(gh_Megatron-DeepSpeed) amd00@MZ32-00:~/yk_repo/Megatron-DeepSpeed/apex$ echo $CUDA_HOME   确认成功解除
+
+(gh_Megatron-DeepSpeed) amd00@MZ32-00:~/yk_repo/Megatron-DeepSpeed/apex$  再次运行，开始编译 一般时间数分钟。如果不到一分钟，可能有问题，也就是
+pip install -v --disable-pip-version-check --no-cache-dir --no-build-isolation --global-option="--cpp_ext" --global-option="--cuda_ext" ./
+
+。。。。
+
+
+=================================================
+
+apex安装、解决ModuleNotFoundError: No module named ‘amp_C‘报错
+
+把import amp_C 去掉！----只能暂时通过，后续还
+=============================================
+
+
+
+
+Traceback (most recent call last):
+  File "/home/amd00/llm_dev/Megatron-DeepSpeed/pretrain_gpt.py", line 20, in <module>
+    from megatron import get_args
+  File "/home/amd00/llm_dev/Megatron-DeepSpeed/megatron/__init__.py", line 28, in <module>
+    from .global_vars import get_args
+  File "/home/amd00/llm_dev/Megatron-DeepSpeed/megatron/global_vars.py", line 23, in <module>
+    from packaging import version
+ImportError: cannot import name 'version' from 'packaging' 
+
+----pip install -U packaging
+
+
+========================================================
+
+
+https://stackoverflow.com/questions/75751907/oserror-cuda-home-environment-variable-is-not-set-please-set-it-to-your-cuda-i
+
+pip3 install torch==1.13.1+cu117 torchvision==0.14.1+cu117 torchaudio==0.13.1 --extra-index-url https://download.pytorch.org/whl/cu117
+
+Megatron-DeepSpeed) amd00@MZ32-00:~/llm_dev/Megatron-DeepSpeed$ conda install -c "nvidia/label/cuda-11.7.0" cuda
+
+==============================================
+
+参考https://askubuntu.com/questions/510176/usr-bin-ld-cannot-find-lcudart
+google搜索时记得去掉-号====/usr/bin/ld: cannot find lcudart  不用用 /usr/bin/ld: cannot find -lcudart
+不同的项目有不同的路径！！！
+
+(gh_Megatron-DeepSpeed) amd00@MZ32-00:~/llm_dev/Megatron-DeepSpeed$ find /home/amd00/anaconda3/ -name libcudart.so
+/home/amd00/anaconda3/envs/gh_Megatron-DeepSpeed/lib/libcudart.so
+
+(gh_Megatron-DeepSpeed) amd00@MZ32-00:~/llm_dev/Megatron-DeepSpeed$
+sudo ln -s /home/amd00/anaconda3/envs/gh_Megatron-DeepSpeed/lib/libcudart.so /usr/lib/libcudart.so
+sudo ln -s /home/amd00/anaconda3/envs/gh_Megatron-DeepSpeed/lib/libcudart_static.a /usr/lib/libcudart_static.a
+还是不行那么：====慎用！！！！
+(gh_Megatron-DeepSpeed) amd00@MZ32-00:~/yk_repo/Megatron-DeepSpeed$
+export PATH=/usr/local/cuda-11.7/bin:${PATH:+:${PATH}}
+
+export CUDA_HOME=/usr/local/cuda-11.7
+export LD_LIBRARY_PATH=${CUDA_HOME}/lib64:${CUDNN_HOME}/lib64:$LD_LIBRARY_PATH
+export CPLUS_INCLUDE_PATH=${CUDA_HOME}/include:${CUDNN_HOME}/include:$CPLUS_INCLUDE_PATH  ##谨慎使用可能导致损坏系统路径！！！！
+
+
+====================================================
+
+
+    model, optimizer, lr_scheduler = setup_model_and_optimizer(model_provider)
+  File "/home/amd00/llm_dev/Megatron-DeepSpeed/megatron/training.py", line 409, in setup_model_and_optimizer
+    optimizer = get_megatron_optimizer(unwrapped_model)
+  File "/home/amd00/llm_dev/Megatron-DeepSpeed/megatron/optimizer/__init__.py", line 77, in get_megatron_optimizer
+    optimizer = adam_optimizer(param_groups,
+  File "/home/amd00/anaconda3/envs/gh_Megatron-DeepSpeed/lib/python3.10/site-packages/apex/optimizers/fused_adam.py", line 80, in __init__
+    raise RuntimeError('apex.optimizers.FusedAdam requires cuda extensions')
+RuntimeError: apex.optimizers.FusedAdam requires cuda extensions
+-----重新安装apex
+
+
+====================================================================
+安装mpi
+https://stackoverflow.com/questions/28440834/error-when-installing-mpi4py
+
+conda install -c conda-forge gxx_linux-64
+conda install -c conda-forge mpi4py mpich
+
+python3 -m pip install mpi4py  ==有时候需要先删除再来！！！
+
+===================
+
+https://www.cnblogs.com/michaelcjl/p/17287840.html
+pybind11 pybind11/pybind11 .h 没有哪个文件或目录
+明明已经安装了
+这类错误往往是编译torch ext时候python3和启动脚本的python不是同一个引起的!!!!!!
+结果越改，安装其他包
+导致系统环境越来越混乱！！！！
+
+git clone https://github.com/pybind/pybind11.git
+
+cd pybind11
+mkdir build
+cd build
+cmake ..
+make check -j 4
+sudo make install
+
+
+sudo apt-get install python3-dev  ===
+
+sudo apt-get install cmake
+
+sudo pip install  pytest
+
+sudo pip install  numpy
+
+sudo pip install  scipy
+sudo pip install  pybind11  ===估计不行
+
+==============
+/usr/local/include/pybind11/detail/common.h:274:10: fatal error: Python.h: No such file or directory
+ #include <Python.h>
+
+apt-get install python3-dev
+apt-get install python-dev
+===导致python2被安装，同时安装了python3.6, 原来是3.9， 且python3指向3.6
+

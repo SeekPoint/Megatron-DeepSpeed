@@ -3,8 +3,8 @@
 白强伟：【Megatron-DeepSpeed】张量并行工具代码mpu详解(二)：Collective通信操作的封装mappings
 白强伟：【Megatron-DeepSpeed】张量并行工具代码mpu详解(一)：并行环境初始化
 https://zhuanlan.zhihu.com/p/619914112
-这些改动似乎会导致错误！！！
-==========
+上面的文章修改了部分代码，导致gpt2等无法运行！！！
+=====
 
 
 https://zhuanlan.zhihu.com/p/636334367

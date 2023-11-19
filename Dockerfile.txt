@@ -1,0 +1,84 @@
+# ref https://zhuanlan.zhihu.com/p/105885669
+# Version 1.0
+
+#FROM 标志着我们定制的镜像是以哪个镜像作为基础进行制作的
+# gingerhugo/cuda-11.7-python-3.9:v1.0.1.1 ub20没法安装apt-get install python3.9-dev , 但其实也没有必要！！
+FROM gingerhugo/cuda-11.7-python-3.9:v1.0.1.1
+# FROM brunneis/python:3.8.3-ubuntu-20.04  ===不好安装cuda
+# FROM homebrew/ubuntu20.04 没有python
+# FROM nvidia/cuda:11.7.1-cudnn8-devel-ubuntu20.04  没有python，且无法启动
+
+# 维护者
+LABEL maintainer="ykdesign@126.com"
+
+# 复制需要安装req文件
+# COPY /home/amd00/yk_repo/Megatron-DeepSpeed/requirements.txt /
+# 上面出错，src只能是在Dockerfile文件所在目录以内，所以看不到/home/amd00/yk_repo/Megatron-DeepSpeed/， 改为
+COPY requirements.txt /
+
+# Dockerfile 中每一个指令都会建立一层，RUN 也不例外。
+# 因此有必要把对个命令写在一起，实际上这是标准做法
+# 镜像操作命令
+# RUN apt-get update 必须要，否则可能出错
+# -y是放在中间，不能放在后面
+# 这个pip.conf似乎对编译阶段没有效果！！！
+RUN set -x; buildDeps='gcc libc6-dev make wget' \
+    && apt-get update \
+    && apt-get install -y $buildDeps \
+    && apt-get install -y vim gcc g++ libxml2 libstdc++6 pciutils software-properties-common git python3-dev cmake mpich \
+    && mkdir -p /.pip \
+    && cd /.pip \
+    && echo "[global]\nindex-url = https://pypi.tuna.tsinghua.edu.cn/simple" > pip.config \
+    && pip3 install torch==1.13.1+cu117 torchvision==0.14.1+cu117 torchaudio==0.13.1 --extra-index-url https://download.pytorch.org/whl/cu117 \
+    && cd / \
+    && python -m pip install -r requirements.txt \
+    && python -m pip install numpy==1.22 
+
+#使用CMD指令
+CMD ["/bin/bash"]   #最后一条
+
+###################这些本来是放在上面编译时执行################
+#    && python -m pip install mpi4py \   ===编译时经常这里中断！ 所以单独放到运行时执行！！！
+# rm /usr/bin/python3
+# ln -s /usr/local/bin/python3.9 /usr/bin/python3
+# 注意，编译torch extension的指令是由pytorch发出的，他是python3，但是这个image的python3和python指向的不是同一个
+# 默认python是python3.9， 而python3是pyhton3.6, 这个错误导致 编译torch extension 的时候找不到pybind11.h之类的错误
+########################################################git
+
+#generate_text.sh需要mpi，只要安装即可
+#python -m pip install mpi4py
+# apt install mpich
+#
+
+# 编译过程, 把本文件的.txt后缀去掉用下面命令编译即可！！！！
+# amd00@MZ32-00:~/yk_repo/Megatron-DeepSpeed$
+# sudo docker build -t megds:v1 .  不需要指定文件名，只要路径即可！！！ 注意docker文件命名 Dockerfile ！！！！
+
+#amd00@MZ32-00:~/yk_repo/Megatron-DeepSpeed$ sudo docker images
+#REPOSITORY                    TAG                       IMAGE ID       CREATED          SIZE
+#megds                         v1                        d8100d2c94a1   5 minutes ago    7.79GB
+
+
+#启动方式
+#为什么加 --entrypoint=/bin/bash  https://stackoverflow.com/questions/38992850/trying-to-run-cloudera-image-in-docker
+# amd00@MZ32-00:~/yk_repo/Meg
+# sudo docker run -it --entrypoint=/bin/bash -v /home/amd00:/share --name yktest02 --gpus=all --shm-size="100G" megds:v1
+
+# amd00@MZ32-00:~/yk_repo/Megatron-DeepSpeed$ sudo docker ps -a
+# CONTAINER ID   IMAGE                                   COMMAND                  CREATED         STATUS                     PORTS     NAMES
+# 0f2d66a0a0fc   megds:v1                                "/bin/bash"              6 minutes ago   Exited (0) 3 minutes ago             yktest
+#
+# amd00@MZ32-00:~/yk_repo/Megatron-DeepSpeed$ sudo docker start 0f2d66a0a0fc  已经创建，
+# 0f2d66a0a0fc
+
+# amd00@MZ32-00:~/yk_repo/Megatron-DeepSpeed$ sudo docker ps -a  ===已经启动
+# CONTAINER ID   IMAGE                                   COMMAND                  CREATED         STATUS                     PORTS     NAMES
+# 0f2d66a0a0fc   megds:v1                                "/bin/bash"              7 minutes ago   Up 5 seconds                         yktest
+
+# amd00@MZ32-00:~/yk_repo/Megatron-DeepSpeed$ sudo docker attach 0f2d66a0a0fc
+# root@0f2d66a0a0fc:/#
+
+
+# amd00@MZ32-00:~/yk_repo/Megatron-DeepSpeed$ sudo docker run -it --entrypoint=/bin/bash -v /home/amd00:/share --name yktest01 --gpus=all --shm-size="100G" megds:v1
+# root@2b4f81662579:/#
+# root@2b4f81662579:/share/yk_repo/Megatron-DeepSpeed# python -m pip install -r requirements.txt

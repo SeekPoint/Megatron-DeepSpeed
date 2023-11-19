@@ -1,6 +1,4 @@
 https://developer.aliyun.com/article/1247831
-
-
 处理数据
 本指南使用1GB 79K-record的JSON格式的OSCAR数据集。
 1.执行以下命令，下载数据集。
@@ -24,10 +22,7 @@ gpt2-merges.txt  gpt2-vocab.json
 (gh_Megatron-DeepSpeed) amd00@MZ32-00:~/yk_repo/Megatron-DeepSpeed$ mv meg-gpt2_text_document* data/
 ==============================
 
-
 python -m pip install numpy==1.22 -i https://pypi.org/simple
-
-
 
 
 (gh_Megatron-DeepSpeed) amd00@MZ32-00:~/llm_dev/Megatron-DeepSpeed/data$ ll
@@ -45,46 +40,18 @@ Opening oscar-1GB.jsonl
 > building GPT2BPETokenizer tokenizer ...
  > padded vocab (size: 50257) with 47 dummy tokens (new size: 50304)
 > building GPT2BPETokenizer tokenizer ...
-> building GPT2BPETokenizer tokenizer ...
-> building GPT2BPETokenizer tokenizer ...
-> building GPT2BPETokenizer tokenizer ...
-> building GPT2BPETokenizer tokenizer ...
-> building GPT2BPETokenizer tokenizer ...
-> building GPT2BPETokenizer tokenizer ...
+。。。
 > building GPT2BPETokenizer tokenizer ...
 Vocab size: 50257
 Output prefix: meg-gpt2
 Time to startup: 0.09256768226623535
  > padded vocab (size: 50257) with 47 dummy tokens (new size: 50304)
- > padded vocab (size: 50257) with 47 dummy tokens (new size: 50304)
- > padded vocab (size: 50257) with 47 dummy tokens (new size: 50304)
- > padded vocab (size: 50257) with 47 dummy tokens (new size: 50304)
- > padded vocab (size: 50257) with 47 dummy tokens (new size: 50304)
- > padded vocab (size: 50257) with 47 dummy tokens (new size: 50304)
- > padded vocab (size: 50257) with 47 dummy tokens (new size: 50304)
+。。。。
  > padded vocab (size: 50257) with 47 dummy tokens (new size: 50304)
 Processed 100 documents (194.43846172032653 docs/s, 2.1531947205949367 MB/s).
-Processed 200 documents (366.2960451365585 docs/s, 4.423845593915071 MB/s).
-Processed 300 documents (376.4312820382417 docs/s, 4.615568622230333 MB/s).
-Processed 400 documents (446.29050565550284 docs/s, 5.623331619343067 MB/s).
-Processed 500 documents (354.7293908619739 docs/s, 4.691650864000317 MB/s).
-Processed 600 documents (418.15697263267595 docs/s, 5.274779205725498 MB/s).
-Processed 700 documents (448.10837582026295 docs/s, 5.867623929432396 MB/s).
-Processed 800 documents (500.51673951417956 docs/s, 6.404569957031354 MB/s).
-Processed 900 documents (555.5019639675381 docs/s, 6.98229338902568 MB/s).
-Processed 1000 documents (589.6308129919121 docs/s, 7.327057608265817 MB/s).
-Processed 1100 documents (629.4324781572037 docs/s, 7.683580511899674 MB/s).
-
-
-
-Processed 78600 documents (1534.9074022700129 docs/s, 19.798353726775282 MB/s).
-Processed 78700 documents (1536.000948221678 docs/s, 19.813630625200073 MB/s).
-Processed 78800 documents (1536.7026848939645 docs/s, 19.827853653560517 MB/s).
-Processed 78900 documents (1537.9305865159988 docs/s, 19.83967447997504 MB/s).
+。。。。
 Processed 79000 documents (1538.6648463165745 docs/s, 19.861539227950722 MB/s).
 (gh_Megatron-DeepSpeed) amd00@MZ32-00:~/llm_dev/Megatron-DeepSpeed$
-(gh_Megatron-DeepSpeed) amd00@MZ32-00:~/llm_dev/Megatron-DeepSpeed$
-
 
 
 5.执行以下命令，将处理好的数据移动到data目录下。
