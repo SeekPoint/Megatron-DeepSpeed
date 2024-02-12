@@ -1,0 +1,2 @@
+https://zhuanlan.zhihu.com/p/653282164
+megatron deepspeed 代码阅读笔记（20230925更新中）

@@ -4,7 +4,7 @@ CHECKPOINT_PATH=checkpoints/gpt2_tg
 VOCAB_FILE=data/gpt2-vocab.json
 MERGE_FILE=data/gpt2-merges.txt
 
-python tools/generate_samples_gpt.py \
+python3.8 tools/generate_samples_gpt.py \
        --tensor-model-parallel-size 2 \
        --num-layers 24 \
        --hidden-size 1024 \

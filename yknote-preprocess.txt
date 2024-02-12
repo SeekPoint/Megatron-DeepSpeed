@@ -34,7 +34,8 @@ drwxrwxr-x 12 amd00 amd00       4096 6月  27 01:54 ../
 -rw-rw-r--  1 amd00 amd00 1075395068 7月  25  2021 oscar-1GB.jsonl
 (gh_Megatron-DeepSpeed) amd00@MZ32-00:~/llm_dev/Megatron-DeepSpeed/data$ mv * ../
 (gh_Megatron-DeepSpeed) amd00@MZ32-00:~/llm_dev/Megatron-DeepSpeed/data$ cd ..
-(gh_Megatron-DeepSpeed) amd00@MZ32-00:~/llm_dev/Megatron-DeepSpeed$ python3 tools/preprocess_data.py     --input oscar-1GB.jsonl     --output-prefix meg-gpt2     --vocab gpt2-vocab.json     --dataset-impl mmap     --tokezer-type GPT2BPETokenizer     --merge-file gpt2-merges.txt     --append-eod     --workers 8
+(gh_Megatron-DeepSpeed) amd00@MZ32-00:~/llm_dev/Megatron-DeepSpeed$
+python3.8 tools/preprocess_data.py --input data/oscar-1GB.jsonl --output-prefix meg-gpt2 --vocab data/gpt2-vocab.json --dataset-impl mmap --tokenizer-type GPT2BPETokenizer --merge-file data/gpt2-merges.txt --append-eod --workers 8
 [2023-06-27 02:05:51,790] [INFO] [real_accelerator.py:110:get_accelerator] Setting ds_accelerator to cuda (auto detect)
 Opening oscar-1GB.jsonl
 > building GPT2BPETokenizer tokenizer ...

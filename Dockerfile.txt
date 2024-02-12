@@ -79,6 +79,34 @@ CMD ["/bin/bash"]   #最后一条
 # root@0f2d66a0a0fc:/#
 
 
-# amd00@MZ32-00:~/yk_repo/Megatron-DeepSpeed$ sudo docker run -it --entrypoint=/bin/bash -v /home/amd00:/share --name yktest01 --gpus=all --shm-size="100G" megds:v1
+# amd00@MZ32-00:~/yk_repo/Megatron-DeepSpeed$
+cd
+
 # root@2b4f81662579:/#
 # root@2b4f81662579:/share/yk_repo/Megatron-DeepSpeed# python -m pip install -r requirements.txt
+
+
+================
+这个版本可用！
+---但是统一到    meg_wiki
+48d910472e09   pytorch/pytorch:1.13.0-cuda11.6-cudnn8-devel   。。。                       meg_wiki
+注意：这个脚本需要python
+而  meg_wiki  需要用python3.8
+
+修改bash启动一处
+以及makefile两处
+
+CXXFLAGS += -O3 -Wall -shared -std=c++11 -fPIC -fdiagnostics-color
+CPPFLAGS += $(shell python3.8 -m pybind11 --inclu
+LIBNAME = helpers
+LIBEXT = $(shell python3.8-config --extension-suffix)
+
+
+amd00@MZ32-00:~$ sudo docker attach meg_wiki
+[sudo] password for amd00:
+You cannot attach to a stopped container, start it first
+amd00@MZ32-00:~$ sudo docker start meg_wiki
+meg_wiki
+amd00@MZ32-00:~$ sudo docker attach meg_wiki
+root@48d910472e09:/workspace#
+

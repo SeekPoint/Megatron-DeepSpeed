@@ -10,7 +10,6 @@ pip3 install torch==1.13.1+cu117 torchvision==0.14.1+cu117 torchaudio==0.13.1 --
   22.03
 
 (gh_Megatron-DeepSpeed) amd00@MZ32-00:~/yk_repo/Megatron-DeepSpeed/apex$
-cd a
 Megatron-DeepSpeed/apex$ python setup.py install
 
 (gh_Megatron-DeepSpeed) amd00@MZ32-00:~/yk_repo/Megatron-DeepSpeed$ conda install -c "nvidia/label/cuda-11.7.0" cuda
@@ -68,7 +67,7 @@ amd00@MZ32-00:~/yk_repo/Megatron-DeepSpeed/apex$ conda activate gh_Megatron-Deep
 
 (gh_Megatron-DeepSpeed) amd00@MZ32-00:~/yk_repo/Megatron-DeepSpeed/apex$  再次运行，开始编译 一般时间数分钟。如果不到一分钟，可能有问题，也就是
 pip install -v --disable-pip-version-check --no-cache-dir --no-build-isolation --global-option="--cpp_ext" --global-option="--cuda_ext" ./
-
+安装后不要移动和删除apex
 。。。。
 
 
@@ -153,29 +152,13 @@ https://www.cnblogs.com/michaelcjl/p/17287840.html
 pybind11 pybind11/pybind11 .h 没有哪个文件或目录
 明明已经安装了
 这类错误往往是编译torch ext时候python3和启动脚本的python不是同一个引起的!!!!!!
+特别注意，很多是编译op的时候爆出来的，需要修改makefile的python
 结果越改，安装其他包
 导致系统环境越来越混乱！！！！
 
-git clone https://github.com/pybind/pybind11.git
-
-cd pybind11
-mkdir build
-cd build
-cmake ..
-make check -j 4
-sudo make install
 
 
-sudo apt-get install python3-dev  ===
 
-sudo apt-get install cmake
-
-sudo pip install  pytest
-
-sudo pip install  numpy
-
-sudo pip install  scipy
-sudo pip install  pybind11  ===估计不行
 
 ==============
 /usr/local/include/pybind11/detail/common.h:274:10: fatal error: Python.h: No such file or directory

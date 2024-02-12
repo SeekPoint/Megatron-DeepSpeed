@@ -15,3 +15,17 @@ https://zhuanlan.zhihu.com/p/579709267
 
 build和data主要参考这个
 https://help.aliyun.com/zh/ecs/use-cases/use-the-megatron-deepspeed-training-gpt-2-and-generate-text
+
+
+https://support.huaweicloud.com/usermanual-modelarts-lite/usermanual-modelarts-lite-0087.html
+GPU Ant8裸金属服务器使用Megatron-Deepspeed训练GPT2并推理
+
+https://66ring.github.io/2023/07/02/universe/ml/megatron_three_easy_pieces/
+简单三步看清Megatron-LM的实现, Megatron源码解析
+
+
+https://www.high-flyer.cn/blog/model_parallel-2/
+模型并行 | 从Megatron谈Pipeline
+
+https://www.high-flyer.cn/blog/model_parallel-1/inidex/
+模型并行 | 大规模语言模型架构 Megatron
